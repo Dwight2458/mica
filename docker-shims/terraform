@@ -1,0 +1,2 @@
+#!/usr/bin/env sh
+exec python -m mica_proxy --tool terraform -- "$@"

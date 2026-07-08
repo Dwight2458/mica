@@ -1,0 +1,45 @@
+{
+  "version": 1,
+  "rules": [
+    {
+      "id": "git-push",
+      "tool": "git",
+      "argv_prefix": ["push"],
+      "action": "require_approval",
+      "risk_level": "high",
+      "reason": "git push can publish local changes to a remote repository."
+    },
+    {
+      "id": "terraform-apply",
+      "tool": "terraform",
+      "argv_prefix": ["apply"],
+      "action": "require_approval",
+      "risk_level": "high",
+      "reason": "terraform apply can mutate infrastructure."
+    },
+    {
+      "id": "terraform-destroy",
+      "tool": "terraform",
+      "argv_prefix": ["destroy"],
+      "action": "require_approval",
+      "risk_level": "high",
+      "reason": "terraform destroy can mutate infrastructure."
+    },
+    {
+      "id": "npm-publish",
+      "tool": "npm",
+      "argv_prefix": ["publish"],
+      "action": "require_approval",
+      "risk_level": "high",
+      "reason": "npm publish can release a package to the registry."
+    },
+    {
+      "id": "kubectl-delete",
+      "tool": "kubectl",
+      "argv_prefix": ["delete"],
+      "action": "require_approval",
+      "risk_level": "high",
+      "reason": "kubectl delete can remove cluster resources."
+    }
+  ]
+}

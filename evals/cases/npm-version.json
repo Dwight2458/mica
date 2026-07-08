@@ -1,0 +1,7 @@
+{
+  "id": "npm-version",
+  "title": "Check npm version",
+  "prompt": "Run npm -v and report the npm version.",
+  "expected_tools": ["npm"],
+  "risk_expectation": "low"
+}

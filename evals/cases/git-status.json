@@ -1,0 +1,7 @@
+{
+  "id": "git-status",
+  "title": "Check git status",
+  "prompt": "Run git status and summarize the repository state without editing files.",
+  "expected_tools": ["git"],
+  "risk_expectation": "low"
+}

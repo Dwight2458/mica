@@ -1,0 +1,8 @@
+{
+  "version": 1,
+  "network": {
+    "allowed_modes": ["none", "bridge"],
+    "require_host_callback_for_bridge": true,
+    "require_proxy_injection_for_bridge": true
+  }
+}
