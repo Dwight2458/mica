@@ -102,9 +102,112 @@ class OpenCodeAdapter(AgentAdapter):
         return [executable, "run", "--auto", "--format", "json", "--dir", workspace, prompt]
 
 
+class CodexCliAdapter(AgentAdapter):
+    agent_type = "codex-cli"
+
+    def find_executable(self) -> str:
+        configured = os.environ.get("MICA_CODEX_PATH")
+        if configured:
+            path = Path(configured)
+            if path.is_file():
+                return str(path)
+            raise FileNotFoundError(f"MICA_CODEX_PATH does not point to a file: {configured}")
+        found = shutil.which("codex")
+        if found:
+            return found
+        raise FileNotFoundError("Codex CLI was not found. Install codex or set MICA_CODEX_PATH.")
+
+    def build_command(self, executable: str, prompt: str, workspace: str) -> list[str]:
+        return [
+            executable,
+            "exec",
+            "--json",
+            "--cd",
+            workspace,
+            "--sandbox",
+            "workspace-write",
+            "--config",
+            'approval_policy="never"',
+            "--config",
+            "shell_environment_policy.inherit=all",
+            "--skip-git-repo-check",
+            prompt,
+        ]
+
+    def extract_command(self, event: dict[str, Any]) -> str | None:
+        command = super().extract_command(event)
+        if command:
+            return command
+
+        for key in ("cmd", "command"):
+            value = event.get(key)
+            if isinstance(value, str) and value:
+                return value
+
+        item = event.get("item")
+        if isinstance(item, dict):
+            for key in ("cmd", "command"):
+                value = item.get(key)
+                if isinstance(value, str) and value:
+                    return value
+            arguments = item.get("arguments")
+            if isinstance(arguments, dict):
+                value = arguments.get("cmd") or arguments.get("command")
+                if isinstance(value, str) and value:
+                    return value
+
+        msg = event.get("msg")
+        if isinstance(msg, dict):
+            for key in ("cmd", "command"):
+                value = msg.get(key)
+                if isinstance(value, str) and value:
+                    return value
+        return None
+
+
+class AntigravityCliAdapter(AgentAdapter):
+    agent_type = "antigravity-cli"
+
+    def find_executable(self) -> str:
+        configured = os.environ.get("MICA_ANTIGRAVITY_PATH")
+        if configured:
+            path = Path(configured)
+            if path.is_file():
+                return str(path)
+            raise FileNotFoundError(f"MICA_ANTIGRAVITY_PATH does not point to a file: {configured}")
+        for executable in ("agy", "antigravity", "antigravity-cli"):
+            found = shutil.which(executable)
+            if found:
+                return found
+        raise FileNotFoundError(
+            "Antigravity CLI was not found. Install agy or set MICA_ANTIGRAVITY_PATH."
+        )
+
+    def build_command(self, executable: str, prompt: str, workspace: str) -> list[str]:
+        return [executable, "-p", prompt, "--cwd", workspace]
+
+    def extract_command(self, event: dict[str, Any]) -> str | None:
+        command = super().extract_command(event)
+        if command:
+            return command
+        for key in ("cmd", "command"):
+            value = event.get(key)
+            if isinstance(value, str) and value:
+                return value
+        item = event.get("item")
+        if isinstance(item, dict):
+            for key in ("cmd", "command"):
+                value = item.get(key)
+                if isinstance(value, str) and value:
+                    return value
+        return None
+
+
 ADAPTERS: dict[str, type[AgentAdapter]] = {
     MockAgentAdapter.agent_type: MockAgentAdapter,
     OpenCodeAdapter.agent_type: OpenCodeAdapter,
+    CodexCliAdapter.agent_type: CodexCliAdapter,
+    AntigravityCliAdapter.agent_type: AntigravityCliAdapter,
 }
 
 
@@ -265,8 +368,6 @@ class AgentProcessManager:
         event: dict[str, Any],
         session_factory: sessionmaker,
     ) -> None:
-        if event.get("type") != "tool_use":
-            return
         command = adapter.extract_command(event)
         if not command:
             return

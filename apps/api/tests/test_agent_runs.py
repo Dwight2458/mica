@@ -7,11 +7,29 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
+from app.runners.agent_adapters import AntigravityCliAdapter, CodexCliAdapter
+
 
 def _write_fake_opencode(tmp_path: Path, body: str) -> Path:
     script = tmp_path / "fake_opencode.py"
     script.write_text(body, encoding="utf-8")
     launcher = tmp_path / "opencode.cmd"
+    launcher.write_text(f'@echo off\r\n"{sys.executable}" "{script}" %*\r\n', encoding="utf-8")
+    return launcher
+
+
+def _write_fake_codex(tmp_path: Path, body: str) -> Path:
+    script = tmp_path / "fake_codex.py"
+    script.write_text(body, encoding="utf-8")
+    launcher = tmp_path / "codex.cmd"
+    launcher.write_text(f'@echo off\r\n"{sys.executable}" "{script}" %*\r\n', encoding="utf-8")
+    return launcher
+
+
+def _write_fake_antigravity(tmp_path: Path, body: str) -> Path:
+    script = tmp_path / "fake_antigravity.py"
+    script.write_text(body, encoding="utf-8")
+    launcher = tmp_path / "agy.cmd"
     launcher.write_text(f'@echo off\r\n"{sys.executable}" "{script}" %*\r\n', encoding="utf-8")
     return launcher
 
@@ -109,6 +127,131 @@ print(json.dumps({"type": "text", "part": {"text": "agent saw prompt: " + sys.ar
     assert any("agent saw prompt" in event["payload"].get("text", "") for event in events)
 
 
+def test_codex_agent_run_starts_cli_and_records_json_events(
+    client: TestClient,
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    launcher = _write_fake_codex(
+        tmp_path,
+        """
+import json
+import sys
+
+assert sys.argv[1:4] == ["exec", "--json", "--cd"], sys.argv
+assert sys.argv[4] in sys.argv, sys.argv
+assert sys.argv[-1] == "Check git status and summarize it.", sys.argv
+assert "--skip-git-repo-check" in sys.argv, sys.argv
+assert "approval_policy=\\\"never\\\"" in sys.argv, sys.argv
+assert "shell_environment_policy.inherit=all" in sys.argv, sys.argv
+print(json.dumps({"type": "session_configured", "session_id": "fake-codex-session"}), flush=True)
+print(json.dumps({"type": "text", "message": "codex saw prompt: " + sys.argv[-1]}), flush=True)
+""".strip(),
+    )
+    monkeypatch.setenv("MICA_CODEX_PATH", str(launcher))
+
+    response = client.post(
+        "/api/agent-runs",
+        json={
+            "prompt": "Check git status and summarize it.",
+            "workspace": str(tmp_path),
+            "agent_type": "codex-cli",
+            "runner_mode": "local",
+        },
+    )
+
+    assert response.status_code == 201
+    payload = response.json()
+    run_id = payload["run"]["id"]
+    run = _wait_for_run(client, run_id, "completed")
+    assert run["source"] == "codex-cli"
+    assert payload["planned_command"][:4] == [str(launcher), "exec", "--json", "--cd"]
+
+    events = client.get(f"/api/events?run_id={run_id}").json()
+    assert any(event["payload"].get("raw_event", {}).get("type") == "session_configured" for event in events)
+    assert any("codex saw prompt" in event["payload"].get("text", "") for event in events)
+
+
+def test_antigravity_agent_run_starts_cli_and_records_text_events(
+    client: TestClient,
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    launcher = _write_fake_antigravity(
+        tmp_path,
+        """
+import sys
+
+assert sys.argv[1] == "-p", sys.argv
+assert sys.argv[2] == "Check git status and summarize it.", sys.argv
+assert sys.argv[3] == "--cwd", sys.argv
+assert sys.argv[4] == sys.argv[-1], sys.argv
+print("antigravity saw prompt: " + sys.argv[2], flush=True)
+""".strip(),
+    )
+    monkeypatch.setenv("MICA_ANTIGRAVITY_PATH", str(launcher))
+
+    response = client.post(
+        "/api/agent-runs",
+        json={
+            "prompt": "Check git status and summarize it.",
+            "workspace": str(tmp_path),
+            "agent_type": "antigravity-cli",
+            "runner_mode": "local",
+        },
+    )
+
+    assert response.status_code == 201
+    payload = response.json()
+    run_id = payload["run"]["id"]
+    run = _wait_for_run(client, run_id, "completed")
+    assert run["source"] == "antigravity-cli"
+    assert payload["planned_command"] == [str(launcher), "-p", "Check git status and summarize it.", "--cwd", str(tmp_path)]
+
+    events = client.get(f"/api/events?run_id={run_id}").json()
+    assert any("antigravity saw prompt" in event["payload"].get("text", "") for event in events)
+
+
+def test_codex_adapter_extracts_commands_from_json_events() -> None:
+    adapter = CodexCliAdapter()
+
+    assert adapter.extract_command({"type": "exec_command_begin", "cmd": "git status"}) == "git status"
+    assert adapter.extract_command({"type": "exec_command_begin", "command": "git status"}) == "git status"
+    assert (
+        adapter.extract_command(
+            {
+                "type": "item",
+                "item": {
+                    "type": "exec_command_call",
+                    "command": "git status",
+                },
+            }
+        )
+        == "git status"
+    )
+
+
+def test_antigravity_adapter_extracts_commands_from_possible_json_events() -> None:
+    adapter = AntigravityCliAdapter()
+
+    assert adapter.extract_command({"type": "tool_use", "command": "git status"}) == "git status"
+    assert (
+        adapter.extract_command(
+            {
+                "type": "tool_use",
+                "part": {
+                    "state": {
+                        "input": {
+                            "command": "git status",
+                        }
+                    }
+                },
+            }
+        )
+        == "git status"
+    )
+
+
 def test_opencode_agent_run_marks_failed_on_nonzero_exit(
     client: TestClient,
     tmp_path: Path,
@@ -196,6 +339,86 @@ print(json.dumps({
     assert "git push origin main" in warnings[0]["payload"]["command_line"]
 
 
+def test_codex_exec_command_high_risk_without_proxy_records_unintercepted_warning(
+    client: TestClient,
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    launcher = _write_fake_codex(
+        tmp_path,
+        """
+import json
+
+print(json.dumps({"type": "exec_command_begin", "cmd": "git push origin main"}), flush=True)
+""".strip(),
+    )
+    monkeypatch.setenv("MICA_CODEX_PATH", str(launcher))
+
+    response = client.post(
+        "/api/agent-runs",
+        json={
+            "prompt": "Push changes.",
+            "workspace": str(tmp_path),
+            "agent_type": "codex-cli",
+            "runner_mode": "local",
+        },
+    )
+
+    assert response.status_code == 201
+    run_id = response.json()["run"]["id"]
+    _wait_for_run(client, run_id, "completed")
+
+    events = client.get(f"/api/events?run_id={run_id}").json()
+    warnings = [
+        event
+        for event in events
+        if event["event_type"] == "policy_decision"
+        and event["payload"].get("decision") == "unintercepted"
+    ]
+    assert len(warnings) == 1
+    assert warnings[0]["payload"]["command_line"] == "git push origin main"
+
+
+def test_antigravity_json_command_high_risk_without_proxy_records_unintercepted_warning(
+    client: TestClient,
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    launcher = _write_fake_antigravity(
+        tmp_path,
+        """
+import json
+
+print(json.dumps({"type": "tool_use", "command": "git push origin main"}), flush=True)
+""".strip(),
+    )
+    monkeypatch.setenv("MICA_ANTIGRAVITY_PATH", str(launcher))
+
+    response = client.post(
+        "/api/agent-runs",
+        json={
+            "prompt": "Push changes.",
+            "workspace": str(tmp_path),
+            "agent_type": "antigravity-cli",
+            "runner_mode": "local",
+        },
+    )
+
+    assert response.status_code == 201
+    run_id = response.json()["run"]["id"]
+    _wait_for_run(client, run_id, "completed")
+
+    events = client.get(f"/api/events?run_id={run_id}").json()
+    warnings = [
+        event
+        for event in events
+        if event["event_type"] == "policy_decision"
+        and event["payload"].get("decision") == "unintercepted"
+    ]
+    assert len(warnings) == 1
+    assert warnings[0]["payload"]["command_line"] == "git push origin main"
+
+
 def test_opencode_run_can_be_cancelled(client: TestClient, tmp_path: Path, monkeypatch) -> None:
     launcher = _write_fake_opencode(
         tmp_path,
@@ -247,3 +470,37 @@ def test_agent_run_agents_endpoint_reports_opencode_availability(
     opencode = next(agent for agent in payload["agents"] if agent["agent_type"] == "opencode")
     assert opencode["available"] is True
     assert opencode["executable"] == str(launcher)
+
+
+def test_agent_run_agents_endpoint_reports_codex_availability(
+    client: TestClient,
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    launcher = _write_fake_codex(tmp_path, "print('ok')")
+    monkeypatch.setenv("MICA_CODEX_PATH", str(launcher))
+
+    response = client.get("/api/agent-runs/agents")
+
+    assert response.status_code == 200
+    payload = response.json()
+    codex = next(agent for agent in payload["agents"] if agent["agent_type"] == "codex-cli")
+    assert codex["available"] is True
+    assert codex["executable"] == str(launcher)
+
+
+def test_agent_run_agents_endpoint_reports_antigravity_availability(
+    client: TestClient,
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    launcher = _write_fake_antigravity(tmp_path, "print('ok')")
+    monkeypatch.setenv("MICA_ANTIGRAVITY_PATH", str(launcher))
+
+    response = client.get("/api/agent-runs/agents")
+
+    assert response.status_code == 200
+    payload = response.json()
+    antigravity = next(agent for agent in payload["agents"] if agent["agent_type"] == "antigravity-cli")
+    assert antigravity["available"] is True
+    assert antigravity["executable"] == str(launcher)

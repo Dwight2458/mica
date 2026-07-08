@@ -28,7 +28,7 @@ Specs:
 - Approval history filters for all, pending, approved, and rejected commands.
 - Command records API and `/commands` audit page for proxy-mediated commands.
 - Run records, `/runs` page, basic run summaries, and failure summaries for controlled Agent CLI sessions.
-- Interactive Web Agent Runs from natural-language prompts with `mock-agent` and real local `opencode` discovery/execution.
+- Interactive Web Agent Runs from natural-language prompts with `mock-agent`, real local `opencode`, real local `codex-cli`, and real local `antigravity-cli` discovery/execution.
 - Run-scoped command evidence via `/commands?run_id=...` and a Run Evidence table that separates Docker wrapper commands from policy-gated inner commands.
 - Event records API, SSE stream, historical event replay, and run-scoped Trace Events plus Realtime Logs panels on `/runs`.
 - Python `mica-proxy` module with JSON command policy loading.
@@ -38,7 +38,7 @@ Specs:
 - Codex CLI probe script via `scripts/probe-codex.ps1`, with real local `hit_rate=1.0` evidence recorded.
 - Claude Code and Gemini CLI probe scripts, ready for local verification when those CLIs are installed.
 - Controlled OpenCode approval runner via `scripts/run-controlled-opencode.ps1`.
-- Web-launched OpenCode runs inject controlled PATH, `MICA_ORIGINAL_PATH`, `MICA_API_BASE_URL`, and `MICA_RUN_ID` so proxy-mediated command evidence can attach to the same run.
+- Web-launched OpenCode, Codex CLI, and Antigravity CLI runs inject controlled PATH, `MICA_ORIGINAL_PATH`, `MICA_API_BASE_URL`, and `MICA_RUN_ID` so proxy-mediated command evidence can attach to the same run.
 - Minimal Docker runner plus an experimental API/service evidence bridge that records Docker executions as Mica runs, commands, events, network policy decisions, workspace file-change evidence, and Docker network-mode evidence.
 - Optional Docker proxy injection plumbing with Linux shims, proxy mount, policy mount, and controlled container PATH.
 - Real Docker approval probe evidence for rejected high-risk `git push` through container shims, with the inner proxy command linked back to the same Docker run summary.
@@ -46,7 +46,7 @@ Specs:
 - Docker demo capture script that runs the approval probe and exports run summary, command records, trace events, file-change events, network evidence, and approval records into a Markdown report.
 - Docker network policy file at `policies/docker-policy.json` for allowed network modes and the explicit host-callback gate.
 - Windows `.cmd` shims for `git`, `npm`, `terraform`, and `kubectl`.
-- PowerShell helper scripts for installing shims, probing PATH, and probing OpenCode.
+- PowerShell helper scripts for installing shims, probing PATH, and probing OpenCode/Codex CLI.
 - Backend tests for command approvals, risk detection, probe mode, controlled OpenCode approval mode, real executable resolution, and command exit-code passthrough.
 
 ## Honest Boundaries
@@ -400,8 +400,10 @@ Use the `Start Agent Run` panel to submit a natural-language task prompt, worksp
 
 - `mock-agent`: a deterministic no-dependency smoke test that records the prompt, creates a small plan, writes command evidence, and completes immediately.
 - `opencode`: a real local Agent CLI run launched as a child process under Mica's controlled PATH. Mica injects `MICA_RUN_ID`, `MICA_ORIGINAL_PATH`, `MICA_API_BASE_URL`, and the repo `shims/` directory so shim/proxy command records and approvals can be grouped under the same run.
+- `codex-cli`: a real local Codex CLI run launched as `codex exec --json --cd <workspace> --sandbox workspace-write --config approval_policy="never" --skip-git-repo-check <prompt>` under the same controlled PATH. Mica records Codex JSONL stdout as trace output and links shim/proxy command evidence back to the run when external binaries resolve through Mica shims.
+- `antigravity-cli`: a real local Antigravity CLI run launched as `agy -p <prompt> --cwd <workspace>` under the same controlled PATH. Mica records stdout/stderr as text trace output and links shim/proxy command evidence back to the run when external binaries resolve through Mica shims.
 
-The UI reads `GET /api/agent-runs/agents` to show whether OpenCode is installed. If OpenCode is unavailable, the option is disabled with the backend reason. Codex and other real agent adapters remain probe/roadmap items and are not enabled from the Web UI by default.
+The UI reads `GET /api/agent-runs/agents` to show whether OpenCode, Codex CLI, and Antigravity CLI are installed. If a CLI is unavailable, the option is disabled with the backend reason. Set `MICA_OPENCODE_PATH`, `MICA_CODEX_PATH`, or `MICA_ANTIGRAVITY_PATH` to point at a specific executable or `.cmd` launcher when auto-discovery is not enough. Claude and Gemini adapters remain probe/roadmap items and are not enabled from the Web UI by default.
 
 Use `Advanced: Execute Docker Command` only when you want to dogfood the lower-level Docker execution path directly with a command JSON array. That panel calls `POST /api/docker/execute`.
 
@@ -415,7 +417,7 @@ POST /api/agent-runs
 {
   "prompt": "Check git status and summarize uncommitted changes.",
   "workspace": "C:\\path\\to\\repo",
-  "agent_type": "opencode",
+  "agent_type": "antigravity-cli",
   "runner_mode": "local"
 }
 ```
