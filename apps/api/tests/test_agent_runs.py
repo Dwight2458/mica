@@ -3,11 +3,14 @@ from __future__ import annotations
 import os
 import sys
 import time
+from datetime import timedelta
 from pathlib import Path
 
 from fastapi.testclient import TestClient
 
 from app.runners.agent_adapters import AntigravityCliAdapter, CodexCliAdapter
+from app.models.approval import utcnow
+from app.models.run import RunRecord
 
 
 def _write_fake_opencode(tmp_path: Path, body: str) -> Path:
@@ -179,13 +182,18 @@ def test_antigravity_agent_run_starts_cli_and_records_text_events(
 ) -> None:
     launcher = _write_fake_antigravity(
         tmp_path,
-        """
+        f"""
+import os
 import sys
 
-assert sys.argv[1] == "-p", sys.argv
+assert sys.argv[1] == "--print", sys.argv
 assert sys.argv[2] == "Check git status and summarize it.", sys.argv
-assert sys.argv[3] == "--cwd", sys.argv
-assert sys.argv[4] == sys.argv[-1], sys.argv
+assert "--add-dir" in sys.argv, sys.argv
+assert sys.argv[sys.argv.index("--add-dir") + 1] == {str(tmp_path)!r}, sys.argv
+assert "--mode" in sys.argv, sys.argv
+assert sys.argv[sys.argv.index("--mode") + 1] == "accept-edits", sys.argv
+assert "--print-timeout" in sys.argv, sys.argv
+assert os.getcwd() == {str(tmp_path)!r}, (os.getcwd(), sys.argv)
 print("antigravity saw prompt: " + sys.argv[2], flush=True)
 """.strip(),
     )
@@ -206,10 +214,162 @@ print("antigravity saw prompt: " + sys.argv[2], flush=True)
     run_id = payload["run"]["id"]
     run = _wait_for_run(client, run_id, "completed")
     assert run["source"] == "antigravity-cli"
-    assert payload["planned_command"] == [str(launcher), "-p", "Check git status and summarize it.", "--cwd", str(tmp_path)]
+    assert payload["planned_command"] == [
+        str(launcher),
+        "--print",
+        "Check git status and summarize it.",
+        "--add-dir",
+        str(tmp_path),
+        "--mode",
+        "accept-edits",
+        "--print-timeout",
+        "10m",
+    ]
 
     events = client.get(f"/api/events?run_id={run_id}").json()
     assert any("antigravity saw prompt" in event["payload"].get("text", "") for event in events)
+
+
+def test_codex_adapter_prefers_windows_cmd_launcher(tmp_path: Path, monkeypatch) -> None:
+    extensionless = tmp_path / "codex"
+    extensionless.write_text("not directly executable on Windows", encoding="utf-8")
+    launcher = tmp_path / "codex.cmd"
+    launcher.write_text("@echo off\r\necho ok\r\n", encoding="utf-8")
+    monkeypatch.setenv("PATH", f"{tmp_path}{os.pathsep}{os.environ['PATH']}")
+    monkeypatch.delenv("MICA_CODEX_PATH", raising=False)
+
+    executable = CodexCliAdapter().find_executable()
+
+    if os.name == "nt":
+        assert executable.lower() == str(launcher).lower()
+    else:
+        assert executable == str(extensionless)
+
+
+def test_codex_adapter_uses_configurable_sandbox(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("MICA_CODEX_SANDBOX", "read-only")
+
+    command = CodexCliAdapter().build_command("codex.cmd", "Say OK.", str(tmp_path))
+
+    assert command[command.index("--sandbox") + 1] == "read-only"
+
+
+def test_codex_adapter_defaults_to_windows_compatible_sandbox(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.delenv("MICA_CODEX_SANDBOX", raising=False)
+
+    command = CodexCliAdapter().build_command("codex.cmd", "Say OK.", str(tmp_path))
+
+    expected = "danger-full-access" if os.name == "nt" else "workspace-write"
+    assert command[command.index("--sandbox") + 1] == expected
+
+
+def test_agent_process_reads_stderr_without_deadlocking(
+    client: TestClient,
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    launcher = _write_fake_opencode(
+        tmp_path,
+        """
+import json
+import sys
+
+sys.stderr.write("x" * 200000 + "\\n")
+sys.stderr.flush()
+print(json.dumps({"type": "text", "part": {"text": "stdout survived stderr flood"}}), flush=True)
+""".strip(),
+    )
+    monkeypatch.setenv("MICA_OPENCODE_PATH", str(launcher))
+
+    response = client.post(
+        "/api/agent-runs",
+        json={
+            "prompt": "Exercise stderr flood.",
+            "workspace": str(tmp_path),
+            "agent_type": "opencode",
+            "runner_mode": "local",
+        },
+    )
+
+    assert response.status_code == 201
+    run_id = response.json()["run"]["id"]
+    _wait_for_run(client, run_id, "completed")
+
+    events = client.get(f"/api/events?run_id={run_id}").json()
+    assert any(event["payload"].get("stream") == "stderr" for event in events)
+    assert any("stdout survived stderr flood" in event["payload"].get("text", "") for event in events)
+
+
+def test_agent_run_emits_file_changed_while_process_is_still_running(
+    client: TestClient,
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    launcher = _write_fake_opencode(
+        tmp_path,
+        """
+from pathlib import Path
+import time
+
+Path("created-before-exit.txt").write_text("hello", encoding="utf-8")
+print("file written", flush=True)
+time.sleep(2)
+""".strip(),
+    )
+    monkeypatch.setenv("MICA_OPENCODE_PATH", str(launcher))
+    monkeypatch.setenv("MICA_WORKSPACE_WATCH_INTERVAL_SECONDS", "0.1")
+
+    response = client.post(
+        "/api/agent-runs",
+        json={
+            "prompt": "Create a file and pause.",
+            "workspace": str(tmp_path),
+            "agent_type": "opencode",
+            "runner_mode": "local",
+        },
+    )
+
+    assert response.status_code == 201
+    run_id = response.json()["run"]["id"]
+    deadline = time.time() + 1.5
+    file_events: list[dict] = []
+    run_payload: dict | None = None
+    while time.time() < deadline:
+        file_events = [
+            event
+            for event in client.get(f"/api/events?run_id={run_id}").json()
+            if event["event_type"] == "file_changed"
+        ]
+        run_payload = client.get(f"/api/runs/{run_id}").json()
+        if file_events:
+            break
+        time.sleep(0.05)
+
+    assert file_events
+    assert file_events[0]["payload"]["relative_path"] == "created-before-exit.txt"
+    assert run_payload is not None
+    assert run_payload["status"] == "started"
+    _wait_for_run(client, run_id, "completed")
+
+
+def test_stale_started_agent_run_is_marked_failed_on_read(client: TestClient) -> None:
+    created = client.post("/api/runs", json={"source": "antigravity-cli", "cwd": "C:\\repo"})
+    assert created.status_code == 201
+    run_id = created.json()["id"]
+
+    with client.app.state.database.session_factory() as session:
+        run = session.get(RunRecord, run_id)
+        assert run is not None
+        run.started_at = utcnow() - timedelta(hours=2)
+        session.add(run)
+        session.commit()
+
+    response = client.get(f"/api/runs/{run_id}")
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "failed"
+    events = client.get(f"/api/events?run_id={run_id}").json()
+    assert events[-1]["payload"]["reason"] == "orphaned_agent_process"
 
 
 def test_codex_adapter_extracts_commands_from_json_events() -> None:
@@ -339,6 +499,56 @@ print(json.dumps({
     assert "git push origin main" in warnings[0]["payload"]["command_line"]
 
 
+def test_opencode_tool_use_completed_records_completed_agent_command(
+    client: TestClient,
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    launcher = _write_fake_opencode(
+        tmp_path,
+        """
+import json
+
+print(json.dumps({
+    "type": "tool_use",
+    "part": {
+        "tool": "bash",
+        "state": {
+            "status": "completed",
+            "input": {"command": "if (Test-Path test.txt) { Remove-Item test.txt; \\"deleted\\" }"},
+            "output": "deleted\\r\\n",
+            "metadata": {"exit": 0, "output": "deleted\\r\\n"}
+        }
+    }
+}), flush=True)
+""".strip(),
+    )
+    monkeypatch.setenv("MICA_OPENCODE_PATH", str(launcher))
+
+    response = client.post(
+        "/api/agent-runs",
+        json={
+            "prompt": "Delete test.txt.",
+            "workspace": str(tmp_path),
+            "agent_type": "opencode",
+            "runner_mode": "local",
+        },
+    )
+
+    assert response.status_code == 201
+    run_id = response.json()["run"]["id"]
+    _wait_for_run(client, run_id, "completed")
+
+    commands = client.get(f"/api/commands?run_id={run_id}").json()
+    assert len(commands) == 1
+    assert commands[0]["command_origin"] == "agent_tool"
+    assert commands[0]["status"] == "completed"
+    assert commands[0]["exit_code"] == 0
+    summary = client.get(f"/api/runs/{run_id}/summary").json()
+    assert summary["agent_tool_commands"] == 1
+    assert summary["successful_governed_commands"] == 1
+
+
 def test_codex_exec_command_high_risk_without_proxy_records_unintercepted_warning(
     client: TestClient,
     tmp_path: Path,
@@ -377,6 +587,65 @@ print(json.dumps({"type": "exec_command_begin", "cmd": "git push origin main"}),
     ]
     assert len(warnings) == 1
     assert warnings[0]["payload"]["command_line"] == "git push origin main"
+
+
+def test_codex_command_execution_event_creates_agent_tool_command_record(
+    client: TestClient,
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    launcher = _write_fake_codex(
+        tmp_path,
+        """
+import json
+
+command = "pwsh -Command Get-Content -LiteralPath .\\\\mock.txt"
+print(json.dumps({
+    "type": "item.started",
+    "item": {
+        "id": "item_1",
+        "type": "command_execution",
+        "command": command,
+        "status": "in_progress",
+        "exit_code": None,
+    },
+}), flush=True)
+print(json.dumps({
+    "type": "item.completed",
+    "item": {
+        "id": "item_1",
+        "type": "command_execution",
+        "command": command,
+        "status": "completed",
+        "exit_code": 0,
+    },
+}), flush=True)
+""".strip(),
+    )
+    monkeypatch.setenv("MICA_CODEX_PATH", str(launcher))
+
+    response = client.post(
+        "/api/agent-runs",
+        json={
+            "prompt": "Read the file.",
+            "workspace": str(tmp_path),
+            "agent_type": "codex-cli",
+            "runner_mode": "local",
+        },
+    )
+
+    assert response.status_code == 201
+    run_id = response.json()["run"]["id"]
+    _wait_for_run(client, run_id, "completed")
+
+    commands = client.get(f"/api/commands?run_id={run_id}").json()
+    assert len(commands) == 1
+    assert commands[0]["command_origin"] == "agent_tool"
+    assert commands[0]["status"] == "completed"
+    summary = client.get(f"/api/runs/{run_id}/summary").json()
+    assert summary["agent_tool_commands"] == 1
+    assert summary["governed_commands"] == 1
+    assert summary["successful_governed_commands"] == 1
 
 
 def test_antigravity_json_command_high_risk_without_proxy_records_unintercepted_warning(

@@ -28,6 +28,7 @@ Specs:
 - Approval history filters for all, pending, approved, and rejected commands.
 - Command records API and `/commands` audit page for proxy-mediated commands.
 - Run records, `/runs` page, basic run summaries, and failure summaries for controlled Agent CLI sessions.
+- Agent Sessions with `/sessions` and `/sessions/{id}` for complex goals that require follow-up input. A Session is the long-lived goal, display message stream, and native Agent session/thread handle; a Run is one governed Agent CLI invocation under that Session.
 - Interactive Web Agent Runs from natural-language prompts with `mock-agent`, real local `opencode`, real local `codex-cli`, and real local `antigravity-cli` discovery/execution.
 - Run-scoped command evidence via `/commands?run_id=...` and a Run Evidence table that separates Docker wrapper commands from policy-gated inner commands.
 - Event records API, SSE stream, historical event replay, and run-scoped Trace Events plus Realtime Logs panels on `/runs`.
@@ -36,7 +37,6 @@ Specs:
 - `mica_probe` summary CLI for hit-rate matrices.
 - `mica_eval` summary CLI with five starter eval cases and sample cross-agent report.
 - Codex CLI probe script via `scripts/probe-codex.ps1`, with real local `hit_rate=1.0` evidence recorded.
-- Claude Code and Gemini CLI probe scripts, ready for local verification when those CLIs are installed.
 - Controlled OpenCode approval runner via `scripts/run-controlled-opencode.ps1`.
 - Web-launched OpenCode, Codex CLI, and Antigravity CLI runs inject controlled PATH, `MICA_ORIGINAL_PATH`, `MICA_API_BASE_URL`, and `MICA_RUN_ID` so proxy-mediated command evidence can attach to the same run.
 - Minimal Docker runner plus an experimental API/service evidence bridge that records Docker executions as Mica runs, commands, events, network policy decisions, workspace file-change evidence, and Docker network-mode evidence.
@@ -101,6 +101,19 @@ Default Docker network policy lives at `policies/docker-policy.json`.
 `POST /api/docker/execute` loads this policy before invoking Docker. By default, `network_mode=none` is allowed and `network_mode=bridge` is allowed only when the request sets both `allow_host_callback=true` and `inject_proxy=true`. Allowed executions record a `policy_decision` trace event before Docker starts, so the run timeline shows which policy allowed the network mode. This keeps host API callback requirements explicit for containerized approval probes while preserving fail-closed behavior for accidental bridge networking. This is request validation and audit evidence, not packet-level egress enforcement.
 
 ## Architecture
+
+### Session vs Run
+
+Mica separates long-lived work from process execution:
+
+```text
+AgentSession = persistent goal, display messages, and native Agent session/thread handle
+  -> SessionMessage = user/agent turns
+  -> Run = one Agent CLI invocation
+      -> Command / Approval / Event = governance evidence
+```
+
+Mica does not rebuild Agent state from its own transcript. OpenCode Sessions use `opencode serve` and send turns through the OpenCode HTTP API with the captured OpenCode session id. Codex continuation uses the captured Codex thread id through `codex exec resume`. If no native handle has been captured yet, the next turn falls back to a one-shot prompt with only the latest user message. If an agent exits after asking for user input, Mica keeps the Session in `waiting_user_input` while the underlying Run can still be `completed`.
 
 ```mermaid
 flowchart LR
@@ -251,19 +264,6 @@ The script requires Codex CLI to be installed as `codex`. It runs `codex exec -C
 
 If Codex CLI is not installed, the script exits `2`. Probe results should be recorded in [docs/codex-probe-report.md](docs/codex-probe-report.md) and summarized in [docs/agent-compatibility-matrix.md](docs/agent-compatibility-matrix.md).
 
-## Probe Claude Code and Gemini CLI
-
-Claude Code and Gemini CLI use the same PATH shim probe flow:
-
-```powershell
-.\scripts\probe-claude.ps1
-.\scripts\probe-gemini.ps1
-```
-
-The Claude probe invokes `claude -p <prompt>`. The Gemini probe invokes `gemini -p <prompt>`. Each script writes a JSONL probe log under `.mica`, summarizes expected `git`, `npm`, and `terraform` hits, and exits `2` if the CLI is not installed.
-
-Current local evidence is still pending for both CLIs on this machine. Do not claim command governance for Claude Code or Gemini CLI until their probe logs show the expected shim hits and [docs/agent-compatibility-matrix.md](docs/agent-compatibility-matrix.md) is updated with real results.
-
 ## Generate Eval Report
 
 Mica includes a small offline eval suite under `evals/cases`:
@@ -289,16 +289,7 @@ Run eval cases through an agent command in probe mode:
 .\scripts\run-eval.ps1 -AgentName codex -AgentKind codex -AgentCommand codex
 ```
 
-Supported `AgentKind` values are `command`, `codex`, `opencode`, `claude`, and `gemini`. The runner injects Mica shims, enables probe mode, executes each case, writes JSONL results, and regenerates the markdown report. In probe mode it measures observed and risky commands, but it does not create approvals.
-
-Examples:
-
-```powershell
-.\scripts\run-eval.ps1 -AgentName claude -AgentKind claude -AgentCommand claude
-.\scripts\run-eval.ps1 -AgentName gemini -AgentKind gemini -AgentCommand gemini
-```
-
-The Claude and Gemini eval modes use the same `-p <prompt>` entrypoint as their probe scripts. Run their probe scripts first and update the compatibility matrix before treating approval-mode eval results as governance evidence.
+Supported `AgentKind` values are `command`, `codex`, and `opencode`. The runner injects Mica shims, enables probe mode, executes each case, writes JSONL results, and regenerates the markdown report. In probe mode it measures observed and risky commands, but it does not create approvals.
 
 Run eval cases against the live approval API:
 
@@ -400,12 +391,14 @@ Use the `Start Agent Run` panel to submit a natural-language task prompt, worksp
 
 - `mock-agent`: a deterministic no-dependency smoke test that records the prompt, creates a small plan, writes command evidence, and completes immediately.
 - `opencode`: a real local Agent CLI run launched as a child process under Mica's controlled PATH. Mica injects `MICA_RUN_ID`, `MICA_ORIGINAL_PATH`, `MICA_API_BASE_URL`, and the repo `shims/` directory so shim/proxy command records and approvals can be grouped under the same run.
-- `codex-cli`: a real local Codex CLI run launched as `codex exec --json --cd <workspace> --sandbox workspace-write --config approval_policy="never" --skip-git-repo-check <prompt>` under the same controlled PATH. Mica records Codex JSONL stdout as trace output and links shim/proxy command evidence back to the run when external binaries resolve through Mica shims.
-- `antigravity-cli`: a real local Antigravity CLI run launched as `agy -p <prompt> --cwd <workspace>` under the same controlled PATH. Mica records stdout/stderr as text trace output and links shim/proxy command evidence back to the run when external binaries resolve through Mica shims.
+- `codex-cli`: a real local Codex CLI run launched as `codex exec --json --cd <workspace> --sandbox <mode> --config approval_policy="never" --skip-git-repo-check <prompt>` under the same controlled PATH. On Windows, Mica defaults `<mode>` to `danger-full-access` because Codex `workspace-write` currently fails to launch shell commands with `CreateProcessAsUserW failed: 5`; set `MICA_CODEX_SANDBOX=workspace-write` to override. Mica records Codex JSONL stdout as trace output and links shim/proxy command evidence back to the run when external binaries resolve through Mica shims.
+- `antigravity-cli`: a real local Antigravity CLI run launched as `agy --print <prompt> --add-dir <workspace> --mode accept-edits --print-timeout 10m`. Mica records stdout/stderr as text trace output and links shim/proxy command evidence back to the run when external binaries resolve through Mica shims.
 
-The UI reads `GET /api/agent-runs/agents` to show whether OpenCode, Codex CLI, and Antigravity CLI are installed. If a CLI is unavailable, the option is disabled with the backend reason. Set `MICA_OPENCODE_PATH`, `MICA_CODEX_PATH`, or `MICA_ANTIGRAVITY_PATH` to point at a specific executable or `.cmd` launcher when auto-discovery is not enough. Claude and Gemini adapters remain probe/roadmap items and are not enabled from the Web UI by default.
+The UI reads `GET /api/agent-runs/agents` to show whether OpenCode, Codex CLI, and Antigravity CLI are installed. If a CLI is unavailable, the option is disabled with the backend reason. Set `MICA_OPENCODE_PATH`, `MICA_CODEX_PATH`, or `MICA_ANTIGRAVITY_PATH` to point at a specific executable or `.cmd` launcher when auto-discovery is not enough.
 
 Use `Advanced: Execute Docker Command` only when you want to dogfood the lower-level Docker execution path directly with a command JSON array. That panel calls `POST /api/docker/execute`.
+
+For `/sessions`, OpenCode uses the server-first path. Mica starts or reuses `opencode serve --hostname 127.0.0.1 --port <free>` and calls `POST /session` plus `POST /session/{id}/message`. Set `MICA_OPENCODE_SERVER_URL=http://127.0.0.1:4096` to attach to an already-running OpenCode server instead of letting Mica start one. This avoids Windows command-line length limits for follow-up turns because user text is sent as a JSON body, not as a CLI argument.
 
 Start Agent Run from API:
 
@@ -604,10 +597,11 @@ The capture script reuses the approval probe, then fetches `/api/commands?run_id
 
 ## Roadmap
 
-- Slice 1: probe OpenCode with controlled PATH and verify shim hit rate.
-- Slice 2: policy files, command records, run records, run summaries, failure summaries, persisted trace events, and SSE for proxy-mediated commands.
-- Slice 3: real Claude/Gemini CLI probes, cross-agent eval comparisons, richer Docker policy enforcement, and WSL2/remote-worker isolation.
+- Completed: Slice 0 Windows command approval proxy with PATH shims and fail-closed approvals.
+- Completed: Slice 1 OpenCode probe with controlled PATH and recorded shim hit evidence.
+- Completed: Slice 2 policy files, command records, run records, run summaries, failure summaries, persisted trace events, SSE for proxy-mediated commands, and Web-launched real Agent CLI runs for OpenCode, Codex CLI, and Antigravity CLI.
+- Next: richer Docker policy enforcement, WSL2/remote-worker isolation, and stronger session resume semantics for long-running interactive work.
 
 ## Resume Description
 
-Mica AgentOps: built a Windows-first Coding Agent execution governance prototype with PATH shims, a Python command proxy, FastAPI approval API, SQLite audit records, and a Next.js approval console. The project focuses on policy-gated command execution for local Agent CLI runtimes, with future slices planned for probe-based agent compatibility, trace evidence, evals, and stronger sandbox isolation.
+Mica AgentOps: built a Windows-first Coding Agent execution governance prototype with PATH shims, a Python command proxy, FastAPI approval API, SQLite audit records, Next.js run/session consoles, and Web-launched Agent CLI adapters for OpenCode, Codex CLI, and Antigravity CLI. The project focuses on policy-gated command execution for local Agent CLI runtimes, with trace evidence, run summaries, command approvals, eval hooks, and a roadmap toward stronger Docker/WSL2/remote-worker isolation.

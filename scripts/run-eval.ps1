@@ -2,7 +2,7 @@ param(
   [string]$RepoRoot = "",
   [Parameter(Mandatory = $true)]
   [string]$AgentName,
-  [ValidateSet("command", "codex", "opencode", "claude", "gemini")]
+  [ValidateSet("command", "codex", "opencode")]
   [string]$AgentKind = "command",
   [ValidateSet("probe", "approval")]
   [string]$EvalMode = "probe",
@@ -73,11 +73,6 @@ function Invoke-AgentCase {
   }
   if ($Kind -eq "opencode") {
     & $CommandPath run --auto $Prompt
-    $script:MicaLastAgentExitCode = $LASTEXITCODE
-    return
-  }
-  if ($Kind -eq "claude" -or $Kind -eq "gemini") {
-    & $CommandPath -p $Prompt
     $script:MicaLastAgentExitCode = $LASTEXITCODE
     return
   }

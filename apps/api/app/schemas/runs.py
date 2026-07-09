@@ -10,6 +10,7 @@ from app.models.enums import RunStatus
 class RunRecordCreate(BaseModel):
     source: str = "manual"
     cwd: str
+    session_id: str | None = None
 
 
 class RunRecordRead(RunRecordCreate):
@@ -36,6 +37,8 @@ class RunSummary(BaseModel):
     total_commands: int
     agent_tool_commands: int = 0
     runtime_internal_commands: int = 0
+    governed_commands: int = 0
+    successful_governed_commands: int = 0
     successful_commands: int
     failed_commands: int
     approval_count: int

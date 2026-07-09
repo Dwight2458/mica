@@ -31,6 +31,22 @@ Mica owns the governance around execution:
 
 Mica may supervise local processes in the MVP, so it has runtime-manager behavior. The product boundary is still execution governance, not agent intelligence.
 
+## Session vs Run
+
+Mica uses a layered object model:
+
+```text
+Session = long-lived coding goal, display messages, and native Agent session/thread handle
+Run = one Agent CLI invocation inside a Session
+Command = governed external action evidence
+Approval = human gate for risky actions
+Trace/Event = auditable execution record
+```
+
+This lets complex tasks continue across multiple Agent CLI invocations without turning Mica into a generic chat or multi-agent team product. The Session Console is an execution-governance interface: it collects user input, records agent questions and answers, and links each turn to run evidence.
+
+Mica must not rebuild Agent state from its own transcript. The transcript is for display and audit. OpenCode Session continuation uses the native server HTTP API and OpenCode session id; Codex continuation uses the Codex thread id. TTY control is a separate observation/takeover layer, not the primary session-resume mechanism.
+
 ## Difference From Multi-Agent Team Platforms
 
 Mica should stay narrower than AI team or multi-agent collaboration systems.
@@ -64,7 +80,7 @@ cancel = kill process tree
 timeout = enforced
 ```
 
-This should support Codex CLI, OpenCode, Claude Code, Gemini CLI, and custom shell agents.
+This should support OpenCode, Codex CLI, Antigravity CLI, and custom shell agents.
 
 ### L1 Structured Stream Adapter
 

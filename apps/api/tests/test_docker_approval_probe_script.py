@@ -160,6 +160,8 @@ class DockerApprovalProbeStubHandler(BaseHTTPRequestHandler):
                     "status": "failed",
                     "cwd": "C:\\workspace",
                     "total_commands": 2,
+                    "governed_commands": 2,
+                    "successful_governed_commands": 0,
                     "successful_commands": 0,
                     "failed_commands": 2,
                     "approval_count": 1,

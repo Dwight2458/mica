@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import queue
 import shutil
 import subprocess
 import threading
@@ -11,7 +12,7 @@ from typing import Any
 
 from sqlalchemy.orm import sessionmaker
 
-from app.models.enums import EventType, RunStatus
+from app.models.enums import CommandStatus, EventType, RunStatus
 from app.schemas.events import EventCreate
 from app.services.command_service import CommandService
 from app.services.event_service import EventService
@@ -32,7 +33,14 @@ class AgentAdapter:
     def find_executable(self) -> str:
         raise NotImplementedError
 
-    def build_command(self, executable: str, prompt: str, workspace: str) -> list[str]:
+    def build_command(
+        self,
+        executable: str,
+        prompt: str,
+        workspace: str,
+        *,
+        external_session_id: str | None = None,
+    ) -> list[str]:
         raise NotImplementedError
 
     def parse_stdout_line(self, line: str) -> dict[str, Any] | None:
@@ -68,13 +76,34 @@ class AgentAdapter:
         return AgentAvailability(self.agent_type, True, executable, None)
 
 
+def _windows_runnable_path(path: str) -> str:
+    """Prefer a directly runnable Windows launcher over extensionless npm shims."""
+    if os.name != "nt":
+        return path
+    candidate = Path(path)
+    if candidate.suffix:
+        return path
+    for suffix in (".cmd", ".bat", ".exe"):
+        sibling = candidate.with_suffix(suffix)
+        if sibling.is_file():
+            return str(sibling)
+    return path
+
+
 class MockAgentAdapter(AgentAdapter):
     agent_type = "mock-agent"
 
     def find_executable(self) -> str:
         return "mock-agent"
 
-    def build_command(self, executable: str, prompt: str, workspace: str) -> list[str]:
+    def build_command(
+        self,
+        executable: str,
+        prompt: str,
+        workspace: str,
+        *,
+        external_session_id: str | None = None,
+    ) -> list[str]:
         normalized = prompt.lower()
         if "git" in normalized and "status" in normalized:
             return ["git", "status", "--short"]
@@ -91,15 +120,26 @@ class OpenCodeAdapter(AgentAdapter):
         if configured:
             path = Path(configured)
             if path.is_file():
-                return str(path)
+                return _windows_runnable_path(str(path))
             raise FileNotFoundError(f"MICA_OPENCODE_PATH does not point to a file: {configured}")
         found = shutil.which("opencode")
         if found:
-            return found
+            return _windows_runnable_path(found)
         raise FileNotFoundError("OpenCode CLI was not found. Install opencode or set MICA_OPENCODE_PATH.")
 
-    def build_command(self, executable: str, prompt: str, workspace: str) -> list[str]:
-        return [executable, "run", "--auto", "--format", "json", "--dir", workspace, prompt]
+    def build_command(
+        self,
+        executable: str,
+        prompt: str,
+        workspace: str,
+        *,
+        external_session_id: str | None = None,
+    ) -> list[str]:
+        command = [executable, "run", "--auto", "--format", "json", "--dir", workspace]
+        if external_session_id:
+            command.extend(["--session", external_session_id])
+        command.append(prompt)
+        return command
 
 
 class CodexCliAdapter(AgentAdapter):
@@ -110,29 +150,43 @@ class CodexCliAdapter(AgentAdapter):
         if configured:
             path = Path(configured)
             if path.is_file():
-                return str(path)
+                return _windows_runnable_path(str(path))
             raise FileNotFoundError(f"MICA_CODEX_PATH does not point to a file: {configured}")
         found = shutil.which("codex")
         if found:
-            return found
+            return _windows_runnable_path(found)
         raise FileNotFoundError("Codex CLI was not found. Install codex or set MICA_CODEX_PATH.")
 
-    def build_command(self, executable: str, prompt: str, workspace: str) -> list[str]:
-        return [
+    def build_command(
+        self,
+        executable: str,
+        prompt: str,
+        workspace: str,
+        *,
+        external_session_id: str | None = None,
+    ) -> list[str]:
+        sandbox = os.environ.get("MICA_CODEX_SANDBOX") or (
+            "danger-full-access" if os.name == "nt" else "workspace-write"
+        )
+        base = [
             executable,
             "exec",
             "--json",
             "--cd",
             workspace,
             "--sandbox",
-            "workspace-write",
+            sandbox,
             "--config",
             'approval_policy="never"',
             "--config",
             "shell_environment_policy.inherit=all",
             "--skip-git-repo-check",
-            prompt,
         ]
+        if external_session_id:
+            base.extend(["resume", external_session_id, prompt])
+        else:
+            base.append(prompt)
+        return base
 
     def extract_command(self, event: dict[str, Any]) -> str | None:
         command = super().extract_command(event)
@@ -173,18 +227,36 @@ class AntigravityCliAdapter(AgentAdapter):
         if configured:
             path = Path(configured)
             if path.is_file():
-                return str(path)
+                return _windows_runnable_path(str(path))
             raise FileNotFoundError(f"MICA_ANTIGRAVITY_PATH does not point to a file: {configured}")
         for executable in ("agy", "antigravity", "antigravity-cli"):
             found = shutil.which(executable)
             if found:
-                return found
+                return _windows_runnable_path(found)
         raise FileNotFoundError(
             "Antigravity CLI was not found. Install agy or set MICA_ANTIGRAVITY_PATH."
         )
 
-    def build_command(self, executable: str, prompt: str, workspace: str) -> list[str]:
-        return [executable, "-p", prompt, "--cwd", workspace]
+    def build_command(
+        self,
+        executable: str,
+        prompt: str,
+        workspace: str,
+        *,
+        external_session_id: str | None = None,
+    ) -> list[str]:
+        timeout = os.environ.get("MICA_ANTIGRAVITY_PRINT_TIMEOUT", "10m")
+        return [
+            executable,
+            "--print",
+            prompt,
+            "--add-dir",
+            workspace,
+            "--mode",
+            "accept-edits",
+            "--print-timeout",
+            timeout,
+        ]
 
     def extract_command(self, event: dict[str, Any]) -> str | None:
         command = super().extract_command(event)
@@ -256,9 +328,14 @@ class AgentProcessManager:
             self._cancelled.add(run_id)
         if process is not None:
             self._terminate_process_tree(process)
+            return True
         with session_factory() as session:
             RunService(session).finish_with_status(run_id, status=RunStatus.CANCELLED)
         return process is not None
+
+    def active_run_ids(self) -> set[str]:
+        with self._lock:
+            return set(self._processes)
 
     def _run_background(
         self,
@@ -270,11 +347,27 @@ class AgentProcessManager:
         session_factory: sessionmaker,
     ) -> None:
         process: subprocess.Popen[str] | None = None
+        stop_watcher = threading.Event()
+        watcher: threading.Thread | None = None
         try:
+            initial_snapshot = _snapshot_workspace(workspace)
+            watcher = threading.Thread(
+                target=self._watch_workspace_changes,
+                kwargs={
+                    "run_id": run_id,
+                    "workspace": workspace,
+                    "initial_snapshot": initial_snapshot,
+                    "stop_event": stop_watcher,
+                    "session_factory": session_factory,
+                },
+                daemon=True,
+            )
+            watcher.start()
             process = subprocess.Popen(
                 command,
                 cwd=workspace,
                 env=self._controlled_env(run_id),
+                stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
@@ -289,13 +382,23 @@ class AgentProcessManager:
                 cancelled = run_id in self._cancelled
                 self._processes.pop(run_id, None)
                 self._cancelled.discard(run_id)
+            stop_watcher.set()
+            if watcher is not None:
+                watcher.join(timeout=1)
             status = RunStatus.CANCELLED if cancelled else RunStatus.COMPLETED if exit_code == 0 else RunStatus.FAILED
             with session_factory() as session:
-                RunService(session).finish_with_status(run_id, status=status)
+                finished_run = RunService(session).finish_with_status(run_id, status=status)
+                if finished_run is not None and finished_run.session_id is not None:
+                    from app.services.session_service import SessionService
+
+                    SessionService(session).finalize_run(finished_run.id, status=finished_run.status)
         except Exception as exc:
             with self._lock:
                 self._processes.pop(run_id, None)
                 self._cancelled.discard(run_id)
+            stop_watcher.set()
+            if watcher is not None:
+                watcher.join(timeout=1)
             with session_factory() as session:
                 EventService(session).create(
                     EventCreate(
@@ -306,7 +409,15 @@ class AgentProcessManager:
                     )
                 )
                 session.commit()
-                RunService(session).finish_with_status(run_id, status=RunStatus.FAILED)
+                finished_run = RunService(session).finish_with_status(run_id, status=RunStatus.FAILED)
+                if finished_run is not None and finished_run.session_id is not None:
+                    from app.services.session_service import SessionService
+
+                    SessionService(session).finalize_run(finished_run.id, status=finished_run.status)
+        finally:
+            stop_watcher.set()
+            if watcher is not None:
+                watcher.join(timeout=1)
 
     def _read_streams(
         self,
@@ -316,15 +427,40 @@ class AgentProcessManager:
         session_factory: sessionmaker,
     ) -> None:
         assert process.stdout is not None
-        for line in process.stdout:
-            event = adapter.parse_stdout_line(line)
-            if event is None:
-                continue
-            self._store_agent_event(run_id, adapter, event, session_factory)
+        output_queue: queue.Queue[tuple[str, str | None]] = queue.Queue()
+        streams = [("stdout", process.stdout)]
         if process.stderr is not None:
-            stderr = process.stderr.read()
-            if stderr:
-                self._store_output(run_id, "stderr", stderr, session_factory)
+            streams.append(("stderr", process.stderr))
+
+        def read_stream(stream_name: str, pipe: Any) -> None:
+            try:
+                for line in pipe:
+                    output_queue.put((stream_name, line))
+            finally:
+                output_queue.put((stream_name, None))
+
+        readers = [
+            threading.Thread(target=read_stream, args=(stream_name, pipe), daemon=True)
+            for stream_name, pipe in streams
+        ]
+        for reader in readers:
+            reader.start()
+
+        finished_readers = 0
+        while finished_readers < len(readers):
+            stream_name, line = output_queue.get()
+            if line is None:
+                finished_readers += 1
+                continue
+            if stream_name == "stdout":
+                event = adapter.parse_stdout_line(line)
+                if event is not None:
+                    self._store_agent_event(run_id, adapter, event, session_factory)
+            else:
+                self._store_output(run_id, stream_name, line, session_factory)
+
+        for reader in readers:
+            reader.join(timeout=1)
 
     def _store_agent_event(
         self,
@@ -346,8 +482,19 @@ class AgentProcessManager:
             session.commit()
             command = adapter.extract_command(event)
             if command:
-                CommandService(session).mark_agent_tool_command(run_id, command)
+                status, exit_code = _command_event_status(event)
+                CommandService(session).record_agent_tool_event(
+                    run_id,
+                    command_line=command,
+                    cwd=self._event_workspace(run_id, session),
+                    status=status,
+                    exit_code=exit_code,
+                )
         self._record_unintercepted_risk(run_id, adapter, event, session_factory)
+
+    def _event_workspace(self, run_id: str, session: Any) -> str:
+        run = RunService(session).get(run_id)
+        return run.cwd if run is not None else ""
 
     def _store_output(self, run_id: str, stream: str, text: str, session_factory: sessionmaker) -> None:
         with session_factory() as session:
@@ -422,6 +569,53 @@ class AgentProcessManager:
             return
         process.kill()
 
+    def _watch_workspace_changes(
+        self,
+        *,
+        run_id: str,
+        workspace: str,
+        initial_snapshot: dict[str, tuple[int, int]],
+        stop_event: threading.Event,
+        session_factory: sessionmaker,
+    ) -> None:
+        previous = initial_snapshot
+        interval = float(os.environ.get("MICA_WORKSPACE_WATCH_INTERVAL_SECONDS", "0.5"))
+        while not stop_event.wait(interval):
+            current = _snapshot_workspace(workspace)
+            for relative_path, stat in current.items():
+                if relative_path not in previous:
+                    self._store_file_changed(run_id, workspace, relative_path, "created", session_factory)
+                elif previous[relative_path] != stat:
+                    self._store_file_changed(run_id, workspace, relative_path, "modified", session_factory)
+            for relative_path in previous:
+                if relative_path not in current:
+                    self._store_file_changed(run_id, workspace, relative_path, "deleted", session_factory)
+            previous = current
+
+    def _store_file_changed(
+        self,
+        run_id: str,
+        workspace: str,
+        relative_path: str,
+        kind: str,
+        session_factory: sessionmaker,
+    ) -> None:
+        full_path = str(Path(workspace) / relative_path)
+        with session_factory() as session:
+            EventService(session).create(
+                EventCreate(
+                    run_id=run_id,
+                    event_type=EventType.FILE_CHANGED,
+                    message=f"File {kind}: {relative_path}",
+                    payload={
+                        "kind": kind,
+                        "path": full_path,
+                        "relative_path": relative_path,
+                    },
+                )
+            )
+            session.commit()
+
 
 def _event_text(event: dict[str, Any]) -> str:
     if isinstance(event.get("message"), str):
@@ -451,4 +645,65 @@ def _high_risk_reason(command: str) -> str | None:
     return None
 
 
+def _command_event_status(event: dict[str, Any]) -> tuple[CommandStatus | None, int | None]:
+    item = event.get("item")
+    payload = item if isinstance(item, dict) else event
+    part = event.get("part")
+    if isinstance(part, dict):
+        state = part.get("state")
+        if isinstance(state, dict):
+            payload = state
+    raw_status = payload.get("status")
+    status: CommandStatus | None = None
+    if raw_status == "completed":
+        status = CommandStatus.COMPLETED
+    elif raw_status == "failed":
+        status = CommandStatus.FAILED
+    elif raw_status in {"in_progress", "running", "started"}:
+        status = CommandStatus.STARTED
+    exit_code = payload.get("exit_code")
+    metadata = payload.get("metadata")
+    if exit_code is None and isinstance(metadata, dict):
+        exit_code = metadata.get("exit")
+    return status, exit_code if isinstance(exit_code, int) else None
+
+
 agent_process_manager = AgentProcessManager()
+
+
+_SKIPPED_WORKSPACE_DIRS = {
+    ".git",
+    ".hg",
+    ".svn",
+    ".next",
+    ".venv",
+    "node_modules",
+    "__pycache__",
+    ".mypy_cache",
+    ".pytest_cache",
+}
+
+
+def _snapshot_workspace(workspace: str, *, max_files: int = 5000) -> dict[str, tuple[int, int]]:
+    root = Path(workspace)
+    snapshot: dict[str, tuple[int, int]] = {}
+    if not root.exists():
+        return snapshot
+    try:
+        iterator = root.rglob("*")
+        for path in iterator:
+            if len(snapshot) >= max_files:
+                break
+            try:
+                relative_parts = path.relative_to(root).parts
+                if any(part in _SKIPPED_WORKSPACE_DIRS for part in relative_parts):
+                    continue
+                if not path.is_file():
+                    continue
+                stat = path.stat()
+            except (OSError, ValueError):
+                continue
+            snapshot[str(path.relative_to(root))] = (stat.st_mtime_ns, stat.st_size)
+    except OSError:
+        return snapshot
+    return snapshot

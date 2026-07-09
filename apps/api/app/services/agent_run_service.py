@@ -38,12 +38,27 @@ class AgentRunService:
     def __init__(self, session: Session) -> None:
         self.session = session
 
-    def start(self, payload: AgentRunCreate, session_factory: sessionmaker | None = None) -> AgentRunResult:
+    def start(
+        self,
+        payload: AgentRunCreate,
+        session_factory: sessionmaker | None = None,
+        *,
+        session_id: str | None = None,
+        original_user_message: str | None = None,
+        external_session_id: str | None = None,
+    ) -> AgentRunResult:
         adapter = get_adapter(payload.agent_type)
         executable = adapter.find_executable()
-        planned_command = adapter.build_command(executable, payload.prompt, payload.workspace)
-        run = RunService(self.session).create(RunRecordCreate(source=payload.agent_type, cwd=payload.workspace))
-        self._record_agent_prompt(run.id, payload)
+        planned_command = adapter.build_command(
+            executable,
+            payload.prompt,
+            payload.workspace,
+            external_session_id=external_session_id,
+        )
+        run = RunService(self.session).create(
+            RunRecordCreate(source=payload.agent_type, cwd=payload.workspace, session_id=session_id)
+        )
+        self._record_agent_prompt(run.id, payload, session_id=session_id, original_user_message=original_user_message)
         self._record_plan(run.id, planned_command)
         if payload.agent_type != "mock-agent":
             if session_factory is None:
@@ -94,6 +109,10 @@ class AgentRunService:
         finished_run = RunService(self.session).finish(run.id)
         if finished_run is None:
             raise RuntimeError("Agent run could not be finalized.")
+        if session_id is not None:
+            from app.services.session_service import SessionService
+
+            SessionService(self.session).finalize_run(finished_run.id, status=finished_run.status)
         return AgentRunResult(
             run=finished_run,
             prompt=payload.prompt,
@@ -102,7 +121,14 @@ class AgentRunService:
             planned_command=planned_command,
         )
 
-    def _record_agent_prompt(self, run_id: str, payload: AgentRunCreate) -> None:
+    def _record_agent_prompt(
+        self,
+        run_id: str,
+        payload: AgentRunCreate,
+        *,
+        session_id: str | None,
+        original_user_message: str | None,
+    ) -> None:
         EventService(self.session).create(
             EventCreate(
                 run_id=run_id,
@@ -110,6 +136,8 @@ class AgentRunService:
                 message="Agent prompt received.",
                 payload={
                     "prompt": payload.prompt,
+                    "original_user_message": original_user_message or payload.prompt,
+                    "session_id": session_id,
                     "agent_type": payload.agent_type,
                     "runner_mode": payload.runner_mode,
                     "workspace": payload.workspace,
@@ -123,7 +151,7 @@ class AgentRunService:
             EventCreate(
                 run_id=run_id,
                 event_type=EventType.PLAN_CREATED,
-                message="Mock agent plan created.",
+                message="Agent command planned.",
                 payload={"planned_command": planned_command},
             )
         )

@@ -30,7 +30,7 @@ Acceptance:
 Non-goals:
 
 - No real AgentAdapter.
-- No OpenCode, Codex CLI, Claude Code, or Gemini CLI.
+- No real Agent CLI integration.
 - No full Task/Run/Trace/SSE productization.
 - No Docker, WSL2, remote worker, or policy-as-code.
 
@@ -73,8 +73,6 @@ Goal: prove Mica across agents and add real isolation options.
 - Done: add `run-eval.ps1` for probe-mode eval execution through `command`, `codex`, and `opencode` agent kinds.
 - Done: add approval-mode eval execution that reads real approval, rejection, risky-command, and command-count metrics from API run summaries.
 - Done: add non-interactive `-AutoDecision approved|rejected` helpers for repeatable risky eval cases.
-- Done: add Claude Code and Gemini CLI probe scripts with fake CLI verification.
-- Done: extend `run-eval.ps1` with `claude` and `gemini` agent kinds for the shared eval flow.
 - Done: add `check-isolation-readiness.ps1` and `docs/isolation-readiness.md` to make Docker/WSL2 readiness explicit before implementing a runner.
 - Done: add `verify-docker-isolation.ps1` and a real Docker spike report with `--rm`, `--network none`, and mounted throwaway workspace.
 - Done: add a minimal Python `DockerRunner` that executes one command with `--rm`, `--network none`, mounted workspace, and structured stdout/stderr/exit-code results.
@@ -98,8 +96,8 @@ Goal: prove Mica across agents and add real isolation options.
 - Done: move Docker network-mode validation into `policies/docker-policy.json` for allowed modes and the explicit bridge host-callback gate.
 - Done: record allowed Docker network policy outcomes as `policy_decision` trace events before container execution.
 - Done: require `inject_proxy=true` for Docker `network_mode=bridge` under the default policy, keeping bridge reserved for containerized approval callbacks.
-- Probe Claude Code and Gemini CLI on machines where those CLIs are installed.
-- Next: record real Claude/Gemini probe reports, then compare their shim hit rates against OpenCode and Codex.
+- Done: add Web-launched real Agent CLI adapters for OpenCode, Codex CLI, and Antigravity CLI under controlled PATH with run-linked command evidence.
+- Done: compare supported CLI shim hit rates and approval behavior across OpenCode, Codex CLI, and Antigravity CLI at the product-contract level; Antigravity still needs a dedicated real shim-hit probe report before stronger governance claims.
 - Next isolation step: productize richer network policy enforcement around Docker runs beyond request validation.
 - Explore WSL2 or remote worker as the practical strong-isolation path on Windows.
 

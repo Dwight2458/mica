@@ -92,6 +92,7 @@ Run records are stored in `runs`.
 Fields:
 
 - `id`
+- `session_id`
 - `source`
 - `cwd`
 - `status`
@@ -107,6 +108,39 @@ Statuses:
 Controlled launchers such as `scripts/run-controlled-opencode.ps1` create a run before spawning the Agent CLI, set `MICA_RUN_ID`, and finish the run after the child process exits. Command records include `run_id` when the environment variable is present.
 
 Run summary is computed from linked command records. It includes total commands, successful commands, failed commands, approvals, rejected commands, risky commands, total command duration, and a small failure summary for the first failed, rejected, or timed-out command.
+
+## Agent Session Data Model
+
+Agent sessions are stored in `agent_sessions`.
+
+Fields:
+
+- `id`
+- `title`
+- `workspace`
+- `agent_type`
+- `runner_mode`
+- `status`
+- `created_at`
+- `updated_at`
+- `last_run_id`
+- `summary`
+
+Session messages are stored in `session_messages`.
+
+Fields:
+
+- `id`
+- `session_id`
+- `run_id`
+- `role`
+- `content`
+- `message_metadata`
+- `created_at`
+
+The Session is the persistent goal, display message stream, and native Agent session/thread handle. The Run is still one Agent CLI invocation. This distinction lets Mica support multi-turn tasks while preserving its AgentOps boundary: each turn remains linked to run, command, approval, and trace evidence.
+
+Mica must not reconstruct Agent state from its own transcript. OpenCode Session turns use the OpenCode server-first HTTP API: Mica starts or reuses `opencode serve`, creates a native OpenCode session with `POST /session`, and sends each turn with `POST /session/{id}/message`. Codex continuation uses the captured Codex thread id through `codex exec resume`. Future adapter work should subscribe to OpenCode `/global/event` for richer streaming/tool evidence and move Codex from `exec resume` to SDK/app-server when deeper turn steering is needed.
 
 ## Event Record Data Model
 
@@ -151,6 +185,11 @@ Events are written by the service layer in the same transaction as the state cha
 - `GET /api/runs/{id}`: read one run record.
 - `PATCH /api/runs/{id}/finish`: finish a run based on linked command outcomes.
 - `GET /api/runs/{id}/summary`: compute a run summary and failure summary.
+- `POST /api/sessions`: create a persistent agent session and start its first run.
+- `GET /api/sessions`: list agent sessions.
+- `GET /api/sessions/{id}`: read one agent session.
+- `GET /api/sessions/{id}/messages`: list display messages captured from user turns and Agent output.
+- `POST /api/sessions/{id}/continue`: append a user message and start the next governed run.
 - `GET /api/events`: list trace events, optionally filtered by `run_id`.
 - `GET /api/events/stream`: stream trace events with SSE, optionally filtered by `run_id`.
 
@@ -198,7 +237,7 @@ Local mode is not a strong sandbox. Absolute paths, direct library calls, and ho
 
 ## Future Adapter Path
 
-AgentAdapter work must come after probe mode proves that a real Agent CLI hits the shims. Slice 1 probes OpenCode first, then later Codex CLI, Claude Code, and Gemini CLI.
+AgentAdapter work must come after probe mode proves that a real Agent CLI hits the shims. The supported adapter track is OpenCode, Codex CLI, Antigravity CLI, and custom command runners.
 
 MCP remains a tool/resource provider path, not the default protocol for connecting Agent runtimes.
 

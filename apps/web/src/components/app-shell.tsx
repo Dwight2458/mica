@@ -5,6 +5,7 @@ import { usePathname } from "next/navigation"
 import {
   CheckSquareIcon,
   ListChecksIcon,
+  MessageSquareIcon,
   TerminalIcon,
   WorkflowIcon,
 } from "lucide-react"
@@ -25,6 +26,7 @@ import { cn } from "@/lib/utils"
 
 const navItems = [
   { href: "/", label: "Command Approvals", icon: CheckSquareIcon },
+  { href: "/sessions", label: "Sessions", icon: MessageSquareIcon },
   { href: "/runs", label: "Runs", icon: ListChecksIcon },
   { href: "/commands", label: "Command Records", icon: TerminalIcon },
 ]
@@ -86,5 +88,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
 function isActiveRoute(pathname: string, href: string) {
   if (href === "/") return pathname === "/" || pathname === "/approvals"
+  if (href === "/sessions") return pathname === "/sessions" || pathname.startsWith("/sessions/")
+  if (href === "/runs") return pathname === "/runs" || pathname.startsWith("/runs/")
   return pathname === href
 }

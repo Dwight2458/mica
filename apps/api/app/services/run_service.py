@@ -41,6 +41,39 @@ class RunService:
         statement = select(RunRecord).order_by(RunRecord.started_at.desc())
         return list(self.session.scalars(statement))
 
+    def mark_orphaned_started_runs(
+        self,
+        *,
+        active_run_ids: set[str],
+        max_age: timedelta = timedelta(minutes=60),
+    ) -> list[RunRecord]:
+        now = _as_utc_naive(utcnow())
+        cutoff = now - max_age
+        statement = select(RunRecord).where(RunRecord.status == RunStatus.STARTED)
+        marked: list[RunRecord] = []
+        for run in self.session.scalars(statement):
+            if run.id in active_run_ids:
+                continue
+            if _as_utc_naive(run.started_at) > cutoff:
+                continue
+            run.status = RunStatus.FAILED
+            run.finished_at = utcnow()
+            self.session.add(run)
+            EventService(self.session).create(
+                EventCreate(
+                    run_id=run.id,
+                    event_type=EventType.RUN_FAILED,
+                    message="Run failed because the agent process is no longer active.",
+                    payload={"status": "failed", "reason": "orphaned_agent_process"},
+                )
+            )
+            marked.append(run)
+        if marked:
+            self.session.commit()
+            for run in marked:
+                self.session.refresh(run)
+        return marked
+
     def get(self, run_id: str) -> RunRecord | None:
         return self.session.get(RunRecord, run_id)
 
@@ -87,6 +120,7 @@ class RunService:
         if run is None:
             return None
         commands = self.commands_for_run(run_id)
+        governed_commands = [command for command in commands if command.command_origin != "runtime_internal"]
         failed_commands = self._failed_commands(commands)
         failure = failed_commands[0] if run.status in {RunStatus.FAILED, RunStatus.CANCELLED} and failed_commands else None
         return RunSummary(
@@ -97,6 +131,10 @@ class RunService:
             total_commands=len(commands),
             agent_tool_commands=sum(1 for command in commands if command.command_origin == "agent_tool"),
             runtime_internal_commands=sum(1 for command in commands if command.command_origin == "runtime_internal"),
+            governed_commands=len(governed_commands),
+            successful_governed_commands=sum(
+                1 for command in governed_commands if command.status == CommandStatus.COMPLETED
+            ),
             successful_commands=sum(1 for command in commands if command.status == CommandStatus.COMPLETED),
             failed_commands=len(failed_commands),
             approval_count=sum(1 for command in commands if command.approval_id is not None),

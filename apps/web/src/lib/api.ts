@@ -1,6 +1,8 @@
 export type ApprovalStatus = "pending" | "approved" | "rejected"
 export type CommandStatus = "started" | "waiting_approval" | "completed" | "failed" | "rejected" | "timeout"
 export type RunStatus = "started" | "completed" | "failed" | "cancelled"
+export type AgentSessionStatus = "active" | "waiting_user_input" | "completed" | "failed" | "cancelled"
+export type SessionMessageRole = "user" | "agent" | "system"
 export type EventType =
   | "run_created"
   | "agent_prompt"
@@ -52,6 +54,7 @@ export type CommandRecord = {
 
 export type RunRecord = {
   id: string
+  session_id: string | null
   source: string
   cwd: string
   status: RunStatus
@@ -67,6 +70,8 @@ export type RunSummary = {
   total_commands: number
   agent_tool_commands: number
   runtime_internal_commands: number
+  governed_commands: number
+  successful_governed_commands: number
   successful_commands: number
   failed_commands: number
   approval_count: number
@@ -124,6 +129,39 @@ export type AgentAvailability = {
 
 export type AgentListResponse = {
   agents: AgentAvailability[]
+}
+
+export type AgentSession = {
+  id: string
+  title: string
+  workspace: string
+  agent_type: string
+  runner_mode: string
+  status: AgentSessionStatus
+  created_at: string
+  updated_at: string
+  last_run_id: string | null
+  external_session_id: string | null
+  transport: string | null
+  backend_url: string | null
+  summary: string | null
+}
+
+export type SessionMessage = {
+  id: string
+  session_id: string
+  run_id: string | null
+  role: SessionMessageRole
+  content: string
+  message_metadata: Record<string, unknown>
+  created_at: string
+}
+
+export type SessionContinueResponse = {
+  session: AgentSession
+  run: RunRecord
+  message: SessionMessage
+  planned_command: string[]
 }
 
 export const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000"

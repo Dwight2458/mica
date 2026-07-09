@@ -132,7 +132,7 @@ The terminal remains the native agent/user interface. Mica is a resident Web con
 ## Explicit Non-Goals
 
 - No real AgentAdapter.
-- No OpenCode, Codex CLI, Claude Code, or Gemini CLI integration.
+- No real Agent CLI integration.
 - No task/session/trace/SSE/run summary work beyond the minimal approval record.
 - No Docker, WSL2, Kubernetes, or remote worker.
 - No policy configuration files.

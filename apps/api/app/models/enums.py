@@ -25,6 +25,20 @@ class RunStatus(str, Enum):
     CANCELLED = "cancelled"
 
 
+class AgentSessionStatus(str, Enum):
+    ACTIVE = "active"
+    WAITING_USER_INPUT = "waiting_user_input"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+
+
+class SessionMessageRole(str, Enum):
+    USER = "user"
+    AGENT = "agent"
+    SYSTEM = "system"
+
+
 class EventType(str, Enum):
     RUN_CREATED = "run_created"
     AGENT_PROMPT = "agent_prompt"

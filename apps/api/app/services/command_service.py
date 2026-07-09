@@ -111,6 +111,54 @@ class CommandService:
             self.session.refresh(marked)
         return marked
 
+    def record_agent_tool_event(
+        self,
+        run_id: str,
+        *,
+        command_line: str,
+        cwd: str,
+        status: CommandStatus | None,
+        exit_code: int | None,
+        duration_ms: int = 0,
+    ) -> CommandRecord | None:
+        marked = self.mark_agent_tool_command(run_id, command_line)
+        if marked is not None:
+            if status in {CommandStatus.COMPLETED, CommandStatus.FAILED} and marked.finished_at is None:
+                return self.finish(
+                    marked.id,
+                    status=status,
+                    exit_code=exit_code if exit_code is not None else (0 if status == CommandStatus.COMPLETED else -1),
+                    duration_ms=duration_ms,
+                )
+            return marked
+
+        record = self._find_synthetic_agent_tool_command(run_id, command_line)
+        if record is None:
+            tool, argv = _split_command_line(command_line)
+            record = self.create(
+                CommandRecordCreate(
+                    run_id=run_id,
+                    tool=tool,
+                    argv=argv,
+                    command_line=command_line,
+                    cwd=cwd,
+                    command_origin="agent_tool",
+                    risk_level="low",
+                    requires_approval=False,
+                    approval_id=None,
+                )
+            )
+
+        if status in {CommandStatus.COMPLETED, CommandStatus.FAILED} and record.finished_at is None:
+            finished = self.finish(
+                record.id,
+                status=status,
+                exit_code=exit_code if exit_code is not None else (0 if status == CommandStatus.COMPLETED else -1),
+                duration_ms=duration_ms,
+            )
+            return finished
+        return record
+
     def _find_matching_command(self, run_id: str, command_line: str) -> CommandRecord | None:
         exact_statement = (
             select(CommandRecord)
@@ -129,28 +177,54 @@ class CommandService:
                 return record
         return None
 
+    def _find_synthetic_agent_tool_command(self, run_id: str, command_line: str) -> CommandRecord | None:
+        normalized = _normalize_for_agent_match(command_line)
+        statement = (
+            select(CommandRecord)
+            .where(CommandRecord.run_id == run_id, CommandRecord.command_origin == "agent_tool")
+            .order_by(CommandRecord.started_at.desc())
+        )
+        for record in self.session.scalars(statement):
+            if _normalize_for_agent_match(record.command_line) == normalized:
+                return record
+        return None
+
     def _classify_origin(self, payload: CommandRecordCreate) -> str:
         if payload.command_origin != "external_binary":
             return payload.command_origin
         if payload.run_id is None:
             return payload.command_origin
         run = self.session.get(RunRecord, payload.run_id)
-        if run is None or run.source != "opencode":
+        if run is None:
             return payload.command_origin
-        if _is_opencode_runtime_command(payload.command_line):
+        if _is_agent_runtime_command(run.source, payload.command_line):
             return "runtime_internal"
         return payload.command_origin
 
 
-def _is_opencode_runtime_command(command_line: str) -> bool:
+def _is_agent_runtime_command(source: str, command_line: str) -> bool:
     normalized = " ".join(command_line.lower().split())
+    if source not in {"opencode", "antigravity-cli"}:
+        return False
     if ".local\\share\\opencode\\snapshot" in normalized or ".local/share/opencode/snapshot" in normalized:
+        return True
+    if source == "opencode" and normalized in {"git init", "git worktree list --porcelain"}:
+        return True
+    if source == "opencode" and (
+        " check-ignore " in normalized
+        or " diff-files " in normalized
+        or " ls-files " in normalized
+        or " write-tree" in normalized
+        or " diff --" in normalized
+        or " add --all" in normalized
+    ):
         return True
     runtime_prefixes = (
         "git rev-parse",
         "git remote get-url",
         "git rev-list",
         "git --no-optional-locks",
+        "git merge-base",
     )
     return normalized.startswith(runtime_prefixes)
 
@@ -166,3 +240,18 @@ def _agent_tool_command_candidates(command_line: str) -> list[str]:
 
 def _normalize_for_agent_match(command_line: str) -> str:
     return " ".join(command_line.replace('"', "'").split())
+
+
+def _split_command_line(command_line: str) -> tuple[str, list[str]]:
+    stripped = command_line.strip()
+    if not stripped:
+        return "unknown", []
+    if stripped[0] in {"'", '"'}:
+        quote = stripped[0]
+        end = stripped.find(quote, 1)
+        if end > 0:
+            tool = stripped[1:end]
+            rest = stripped[end + 1 :].strip()
+            return tool, rest.split() if rest else []
+    parts = stripped.split()
+    return parts[0], parts[1:]

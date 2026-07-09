@@ -74,6 +74,8 @@ def test_run_summary_counts_commands_and_approvals(client: TestClient) -> None:
         "total_commands": 2,
         "agent_tool_commands": 0,
         "runtime_internal_commands": 0,
+        "governed_commands": 2,
+        "successful_governed_commands": 1,
         "successful_commands": 1,
         "failed_commands": 1,
         "approval_count": 1,
@@ -277,6 +279,8 @@ def test_opencode_runtime_internal_commands_do_not_fail_agent_run(client: TestCl
         assert summary.total_commands == 2
         assert summary.agent_tool_commands == 1
         assert summary.runtime_internal_commands == 1
+        assert summary.governed_commands == 1
+        assert summary.successful_governed_commands == 1
         assert summary.failed_commands == 0
         assert summary.failure_summary is None
 
@@ -307,3 +311,52 @@ def test_opencode_snapshot_command_is_classified_as_runtime_internal(client: Tes
         )
 
         assert command.command_origin == "runtime_internal"
+
+
+def test_opencode_housekeeping_git_commands_are_classified_as_runtime_internal(client: TestClient) -> None:
+    with client.app.state.database.session_factory() as session:
+        run = RunService(session).create(RunRecordCreate(source="opencode", cwd="C:\\repo"))
+        command_lines = [
+            "git init",
+            "git worktree list --porcelain",
+            "git -c core.autocrlf=false --git-dir 'C:\\repo\\.git' --work-tree 'C:\\repo' check-ignore --no-index --stdin -z",
+        ]
+        for command_line in command_lines:
+            command = CommandService(session).create(
+                CommandRecordCreate(
+                    run_id=run.id,
+                    tool="git",
+                    argv=command_line.split()[1:],
+                    command_line=command_line,
+                    cwd="C:\\repo",
+                    risk_level="low",
+                    requires_approval=False,
+                    approval_id=None,
+                )
+            )
+            assert command.command_origin == "runtime_internal"
+
+
+def test_antigravity_git_merge_base_is_classified_as_runtime_internal(client: TestClient) -> None:
+    with client.app.state.database.session_factory() as session:
+        run = RunService(session).create(RunRecordCreate(source="antigravity-cli", cwd="C:\\repo"))
+        command = CommandService(session).create(
+            CommandRecordCreate(
+                run_id=run.id,
+                tool="git",
+                argv=["merge-base", "HEAD", "origin/main"],
+                command_line="git merge-base HEAD origin/main",
+                cwd="C:\\repo",
+                risk_level="low",
+                requires_approval=False,
+                approval_id=None,
+            )
+        )
+        CommandService(session).finish(command.id, status=CommandStatus.FAILED, exit_code=128, duration_ms=20)
+        summary = RunService(session).summary(run.id)
+
+        assert command.command_origin == "runtime_internal"
+        assert summary is not None
+        assert summary.runtime_internal_commands == 1
+        assert summary.governed_commands == 0
+        assert summary.successful_governed_commands == 0

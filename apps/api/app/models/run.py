@@ -15,6 +15,7 @@ class RunRecord(Base):
     __tablename__ = "runs"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    session_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
     source: Mapped[str] = mapped_column(String(80), index=True)
     cwd: Mapped[str] = mapped_column(String(1024))
     status: Mapped[RunStatus] = mapped_column(

@@ -62,3 +62,17 @@ Starting a real OpenCode run from `/runs` may use the user's local OpenCode conf
 ## Local-Mode Boundary
 
 Mica's local Web-launched OpenCode runs inject a controlled PATH and `MICA_RUN_ID`, but local mode is not a strong sandbox. It governs external binaries that resolve through Mica shims. It does not reliably intercept PowerShell or cmd built-ins, absolute executable paths, direct library calls, or hostile child processes.
+
+## OpenCode Sessions Through `opencode serve`
+
+The `/sessions` OpenCode adapter uses the OpenCode HTTP server path. Mica either attaches to `MICA_OPENCODE_SERVER_URL` or starts `opencode serve --hostname 127.0.0.1 --port <free>` for the workspace.
+
+Useful checks:
+
+```powershell
+opencode serve --hostname 127.0.0.1 --port 4096
+Invoke-RestMethod http://127.0.0.1:4096/global/health
+$env:MICA_OPENCODE_SERVER_URL = "http://127.0.0.1:4096"
+```
+
+Session turns call `POST /session/{id}/message` with JSON text parts. This is intentionally different from `/runs`, which still uses `opencode run --auto --format json` for one-shot run evidence. Because `opencode serve` is a long-lived process, per-turn command evidence cannot rely only on a static `MICA_RUN_ID` environment variable; richer run-linked tool evidence should come from OpenCode server events or an explicit proxy/session mapping.

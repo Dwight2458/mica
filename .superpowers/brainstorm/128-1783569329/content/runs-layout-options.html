@@ -1,0 +1,103 @@
+<h2>Runs 页面信息架构：选一个默认方向</h2>
+<p class="subtitle">目标是让 Mica 更像 AgentOps 控制台：列表用于找 Run，详情用于复盘一次执行，不把所有证据堆在同一个长页面。</p>
+
+<div class="cards">
+  <div class="card" data-choice="a" onclick="toggleSelect(this)">
+    <div class="card-image">
+      <div class="mockup">
+        <div class="mockup-header">A. Master-detail 单页</div>
+        <div class="mockup-body">
+          <div style="display:grid;grid-template-columns:38% 1fr;gap:12px;min-height:260px">
+            <div class="mock-sidebar">
+              <div class="label">Runs</div>
+              <div class="placeholder" style="height:34px">Run row: status / agent / duration</div>
+              <div class="placeholder" style="height:34px">Run row: approvals / risky</div>
+              <div class="placeholder" style="height:34px">Run row: latest output</div>
+            </div>
+            <div class="mock-content">
+              <div class="label">Selected Run</div>
+              <div class="placeholder" style="height:42px">Summary strip: status, agent, governed commands, approvals</div>
+              <div class="placeholder" style="height:42px">Primary output: assistant text + tool output</div>
+              <div class="placeholder" style="height:42px">Evidence: user-facing commands and file changes</div>
+              <div class="placeholder" style="height:42px">Timeline preview + Debug toggle</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>A. Master-detail 单页</h3>
+      <p>仍在 `/runs`，左侧列表，右侧详情。最快落地，适合当前 MVP，用户不离开页面即可切换 Run。</p>
+    </div>
+  </div>
+
+  <div class="card" data-choice="b" onclick="toggleSelect(this)">
+    <div class="card-image">
+      <div class="mockup">
+        <div class="mockup-header">B. List + Detail Route</div>
+        <div class="mockup-body">
+          <div style="display:grid;gap:12px;min-height:260px">
+            <div class="placeholder" style="height:54px">/runs: dense table + filters + Create Run</div>
+            <div class="placeholder" style="height:54px">Click View opens /runs/[id]</div>
+            <div class="mock-content">
+              <div class="label">/runs/[id]</div>
+              <div class="placeholder" style="height:36px">Run summary header</div>
+              <div class="placeholder" style="height:36px">Tabs: Overview / Evidence / Logs / Trace / Debug</div>
+              <div class="placeholder" style="height:58px">Selected tab content</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>B. 独立详情页</h3>
+      <p>最清晰、最像生产控制台。列表页负责筛选和启动，详情页负责一次 Run 的复盘。实现稍多，但长期最好。</p>
+    </div>
+  </div>
+
+  <div class="card" data-choice="c" onclick="toggleSelect(this)">
+    <div class="card-image">
+      <div class="mockup">
+        <div class="mockup-header">C. Table + Detail Drawer</div>
+        <div class="mockup-body">
+          <div style="display:grid;grid-template-columns:1fr 320px;gap:12px;min-height:260px">
+            <div class="mock-content">
+              <div class="label">Runs table</div>
+              <div class="placeholder" style="height:38px">Row</div>
+              <div class="placeholder" style="height:38px">Row selected</div>
+              <div class="placeholder" style="height:38px">Row</div>
+            </div>
+            <div class="mock-sidebar">
+              <div class="label">Drawer</div>
+              <div class="placeholder" style="height:34px">Summary</div>
+              <div class="placeholder" style="height:34px">Latest logs</div>
+              <div class="placeholder" style="height:34px">Evidence preview</div>
+              <button class="mock-button">Open full detail</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>C. 侧边详情抽屉</h3>
+      <p>适合快速浏览大量 Run。缺点是 evidence/logs/trace 空间偏小，后续仍需要 full detail。</p>
+    </div>
+  </div>
+</div>
+
+<div class="pros-cons">
+  <div class="pros">
+    <h4>我的推荐</h4>
+    <ul>
+      <li>短期：A，最快把当前页面变舒服。</li>
+      <li>长期：B，最符合 AgentOps 复盘和分享链接。</li>
+    </ul>
+  </div>
+  <div class="cons">
+    <h4>不建议优先 C</h4>
+    <ul>
+      <li>它解决了拥挤，但没有解决复盘深度。</li>
+      <li>复杂证据仍会被塞进小抽屉。</li>
+    </ul>
+  </div>
+</div>
