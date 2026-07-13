@@ -13,6 +13,9 @@ export const runEventTypes: EventType[] = [
   "approval_required",
   "approval_approved",
   "approval_rejected",
+  "interaction_required",
+  "interaction_responded",
+  "interaction_dismissed",
   "run_completed",
   "run_failed",
 ]
@@ -52,6 +55,7 @@ export function agentOutputText(event: MicaEvent): string | null {
   const part = rawPart(event)
   const item = rawItem(event)
   if (rawType === "text" && typeof part?.text === "string") return part.text
+  if (rawType === "opencode_message_part" && typeof part?.text === "string") return part.text
   if (rawType === "tool_use") {
     const state = part?.state
     if (state && typeof state === "object" && !Array.isArray(state)) {
@@ -65,6 +69,9 @@ export function agentOutputText(event: MicaEvent): string | null {
     }
   }
   if (item?.type === "agent_message" && typeof item.text === "string") return item.text
+  if (typeof event.payload.text === "string" && ["stdout", "stderr", "agent"].includes(String(event.payload.stream))) {
+    return event.payload.text
+  }
   return null
 }
 
@@ -96,4 +103,3 @@ export function runPromptFromEvents(events: MicaEvent[]): string | null {
   const promptEvent = events.find((event) => event.event_type === "agent_prompt")
   return promptEvent ? eventPayloadString(promptEvent, "prompt") ?? promptEvent.message : null
 }
-

@@ -113,7 +113,7 @@ AgentSession = persistent goal, display messages, and native Agent session/threa
       -> Command / Approval / Event = governance evidence
 ```
 
-Mica does not rebuild Agent state from its own transcript. OpenCode Sessions use `opencode serve` and send turns through the OpenCode HTTP API with the captured OpenCode session id. Codex continuation uses the captured Codex thread id through `codex exec resume`. If no native handle has been captured yet, the next turn falls back to a one-shot prompt with only the latest user message. If an agent exits after asking for user input, Mica keeps the Session in `waiting_user_input` while the underlying Run can still be `completed`.
+Mica does not rebuild Agent state from its own transcript. OpenCode Sessions use `opencode serve` and send turns through the OpenCode HTTP API with the captured OpenCode session id. Codex Sessions use a two-layer adapter: the default stable path uses the captured Codex thread id through `codex exec resume`, while `MICA_CODEX_SESSION_TRANSPORT=app-server` enables the native `codex app-server` JSON-RPC path with `thread/start`, `thread/resume`, and `turn/start`. If no native handle has been captured yet, the next turn falls back to a one-shot prompt with only the latest user message. If an agent exits after asking for user input, Mica keeps the Session in `waiting_user_input` while the underlying Run can still be `completed`.
 
 ```mermaid
 flowchart LR
@@ -399,6 +399,14 @@ The UI reads `GET /api/agent-runs/agents` to show whether OpenCode, Codex CLI, a
 Use `Advanced: Execute Docker Command` only when you want to dogfood the lower-level Docker execution path directly with a command JSON array. That panel calls `POST /api/docker/execute`.
 
 For `/sessions`, OpenCode uses the server-first path. Mica starts or reuses `opencode serve --hostname 127.0.0.1 --port <free>` and calls `POST /session` plus `POST /session/{id}/message`. Set `MICA_OPENCODE_SERVER_URL=http://127.0.0.1:4096` to attach to an already-running OpenCode server instead of letting Mica start one. This avoids Windows command-line length limits for follow-up turns because user text is sent as a JSON body, not as a CLI argument.
+
+For `/sessions`, Codex defaults to the stable `codex exec --json` / `codex exec resume <thread_id>` path. To use the deeper native Codex app-server path, set:
+
+```powershell
+$env:MICA_CODEX_SESSION_TRANSPORT = "app-server"
+```
+
+Mica then starts `codex app-server` over stdio JSON-RPC, creates or resumes the native thread, sends each turn with `turn/start`, stores the Codex thread id on the Session, and records app-server events into the run trace. This preserves agent-native conversation state without reconstructing context from Mica's display transcript. It is still not a promise to restore process-level shell state such as an old REPL or transient terminal buffer.
 
 Start Agent Run from API:
 

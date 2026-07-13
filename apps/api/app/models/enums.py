@@ -33,6 +33,26 @@ class AgentSessionStatus(str, Enum):
     CANCELLED = "cancelled"
 
 
+class InteractionKind(str, Enum):
+    CHOICE = "choice"
+    TEXT = "text"
+    PERMISSION = "permission"
+    APPROVAL = "approval"
+
+
+class InteractionSource(str, Enum):
+    NATIVE = "native"
+    STRUCTURED = "structured"
+    HEURISTIC = "heuristic"
+
+
+class InteractionStatus(str, Enum):
+    PENDING = "pending"
+    RESPONDED = "responded"
+    DISMISSED = "dismissed"
+    EXPIRED = "expired"
+
+
 class SessionMessageRole(str, Enum):
     USER = "user"
     AGENT = "agent"
@@ -52,5 +72,8 @@ class EventType(str, Enum):
     APPROVAL_REQUIRED = "approval_required"
     APPROVAL_APPROVED = "approval_approved"
     APPROVAL_REJECTED = "approval_rejected"
+    INTERACTION_REQUIRED = "interaction_required"
+    INTERACTION_RESPONDED = "interaction_responded"
+    INTERACTION_DISMISSED = "interaction_dismissed"
     RUN_COMPLETED = "run_completed"
     RUN_FAILED = "run_failed"

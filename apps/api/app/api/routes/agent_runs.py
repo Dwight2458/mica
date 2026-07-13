@@ -3,11 +3,10 @@ from __future__ import annotations
 from fastapi import APIRouter, HTTPException, Request, status
 
 from app.api.deps import SessionDep
-from app.runners.agent_adapters import agent_process_manager, list_agent_availability
+from app.runners.agent_adapters import list_agent_availability
 from app.schemas.agent_runs import AgentAvailabilityRead, AgentListRead, AgentRunCreate, AgentRunRead
 from app.schemas.runs import RunRecordRead
 from app.services.agent_run_service import AgentRunService
-from app.services.run_service import RunService
 
 router = APIRouter()
 
@@ -36,9 +35,13 @@ def start_agent_run(payload: AgentRunCreate, session: SessionDep, request: Reque
 
 @router.post("/agent-runs/{run_id}/cancel", response_model=RunRecordRead)
 def cancel_agent_run(run_id: str, session: SessionDep, request: Request) -> RunRecordRead:
-    run = RunService(session).get(run_id)
+    try:
+        run = AgentRunService(session).cancel(
+            run_id,
+            session_factory=request.app.state.database.session_factory,
+        )
+    except (OSError, ValueError) as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
     if run is None:
         raise HTTPException(status_code=404, detail="Run not found")
-    agent_process_manager.cancel(run_id, request.app.state.database.session_factory)
-    session.refresh(run)
     return RunRecordRead.model_validate(run)

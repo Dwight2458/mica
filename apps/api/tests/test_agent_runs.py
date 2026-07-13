@@ -10,7 +10,9 @@ from fastapi.testclient import TestClient
 
 from app.runners.agent_adapters import AntigravityCliAdapter, CodexCliAdapter
 from app.models.approval import utcnow
+from app.models.enums import AgentSessionStatus
 from app.models.run import RunRecord
+from app.models.session import AgentSession
 
 
 def _write_fake_opencode(tmp_path: Path, body: str) -> Path:
@@ -370,6 +372,41 @@ def test_stale_started_agent_run_is_marked_failed_on_read(client: TestClient) ->
     assert response.json()["status"] == "failed"
     events = client.get(f"/api/events?run_id={run_id}").json()
     assert events[-1]["payload"]["reason"] == "orphaned_agent_process"
+
+
+def test_native_http_session_run_is_not_marked_as_orphaned_process(client: TestClient) -> None:
+    with client.app.state.database.session_factory() as session:
+        agent_session = AgentSession(
+            title="Native OpenCode session",
+            workspace="C:\\repo",
+            agent_type="opencode",
+            runner_mode="local",
+            status=AgentSessionStatus.WAITING_USER_INPUT,
+            transport="http",
+            backend_url="http://127.0.0.1:4096",
+            external_session_id="oc-native-session",
+        )
+        session.add(agent_session)
+        session.commit()
+
+    created = client.post(
+        "/api/runs",
+        json={"source": "opencode", "cwd": "C:\\repo", "session_id": agent_session.id},
+    )
+    run_id = created.json()["id"]
+    with client.app.state.database.session_factory() as session:
+        run = session.get(RunRecord, run_id)
+        assert run is not None
+        run.started_at = utcnow() - timedelta(hours=2)
+        session.add(run)
+        session.commit()
+
+    response = client.get(f"/api/runs/{run_id}")
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "started"
+    events = client.get(f"/api/events?run_id={run_id}").json()
+    assert not any(event["payload"].get("reason") == "orphaned_agent_process" for event in events)
 
 
 def test_codex_adapter_extracts_commands_from_json_events() -> None:

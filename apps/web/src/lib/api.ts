@@ -3,6 +3,9 @@ export type CommandStatus = "started" | "waiting_approval" | "completed" | "fail
 export type RunStatus = "started" | "completed" | "failed" | "cancelled"
 export type AgentSessionStatus = "active" | "waiting_user_input" | "completed" | "failed" | "cancelled"
 export type SessionMessageRole = "user" | "agent" | "system"
+export type InteractionKind = "choice" | "text" | "permission" | "approval"
+export type InteractionSource = "native" | "structured" | "heuristic"
+export type InteractionStatus = "pending" | "responded" | "dismissed" | "expired"
 export type EventType =
   | "run_created"
   | "agent_prompt"
@@ -16,6 +19,9 @@ export type EventType =
   | "approval_required"
   | "approval_approved"
   | "approval_rejected"
+  | "interaction_required"
+  | "interaction_responded"
+  | "interaction_dismissed"
   | "run_completed"
   | "run_failed"
 
@@ -157,11 +163,45 @@ export type SessionMessage = {
   created_at: string
 }
 
+export type SessionInteraction = {
+  id: string
+  session_id: string
+  run_id: string | null
+  adapter: string
+  kind: InteractionKind
+  source: InteractionSource
+  prompt: string
+  options: Array<{
+    id: string
+    label: string
+    value: string
+    description?: string
+    question_index?: number
+    question?: string
+    header?: string
+    multiple?: boolean
+  }>
+  status: InteractionStatus
+  external_id: string | null
+  response_payload: Record<string, unknown> | null
+  created_at: string
+  resolved_at: string | null
+}
+
 export type SessionContinueResponse = {
   session: AgentSession
   run: RunRecord
   message: SessionMessage
   planned_command: string[]
+}
+
+export type SessionInteractionRespondResponse = {
+  interaction: SessionInteraction
+  session: AgentSession | null
+  run: RunRecord | null
+  message: SessionMessage | null
+  planned_command: string[]
+  action: "continued_session" | "responded_permission" | "responded_native_interaction" | "dismissed"
 }
 
 export const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000"

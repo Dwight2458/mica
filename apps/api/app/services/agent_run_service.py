@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.orm import Session
 
-from app.models.enums import CommandStatus, EventType
+from app.models.enums import CommandStatus, EventType, RunStatus
 from app.models.run import RunRecord
 from app.runners.agent_adapters import agent_process_manager, get_adapter
 from app.schemas.agent_runs import AgentRunCreate
@@ -120,6 +120,31 @@ class AgentRunService:
             runner_mode=payload.runner_mode,
             planned_command=planned_command,
         )
+
+    def cancel(self, run_id: str, *, session_factory: sessionmaker) -> RunRecord | None:
+        run = RunService(self.session).get(run_id)
+        if run is None:
+            return None
+        if run.source == "opencode" and run.session_id:
+            from app.models.session import AgentSession
+            from app.runners.opencode_server import OpenCodeServerClient
+            from app.services.session_service import SessionService
+
+            record = self.session.get(AgentSession, run.session_id)
+            if (
+                record is not None
+                and record.transport == "http"
+                and record.backend_url
+                and record.external_session_id
+            ):
+                OpenCodeServerClient(record.backend_url).abort_session(record.external_session_id)
+                finished = RunService(self.session).finish_with_status(run_id, status=RunStatus.CANCELLED)
+                if finished is not None:
+                    SessionService(self.session).finalize_run(finished.id, status=finished.status)
+                return finished
+        agent_process_manager.cancel(run_id, session_factory)
+        self.session.expire_all()
+        return RunService(self.session).get(run_id)
 
     def _record_agent_prompt(
         self,

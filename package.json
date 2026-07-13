@@ -7,8 +7,9 @@
     "dev:web": "pnpm --filter web dev",
     "build:web": "pnpm --filter web build",
     "lint:web": "pnpm --filter web lint",
+    "test:web": "pnpm --filter web test",
     "dev:api": "cd apps/api && uv run uvicorn app.main:app --reload --host 0.0.0.0 --port 8000",
     "test:api": "cd apps/api && uv run pytest",
-    "test": "pnpm test:api && pnpm lint:web"
+    "test": "pnpm test:api && pnpm test:web && pnpm lint:web"
   }
 }
