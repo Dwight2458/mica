@@ -1,5 +1,7 @@
 # Mica AgentOps
 
+[English](README.md) | [简体中文](README_zh.md)
+
 Mica AgentOps is a Windows-first execution governance control plane for local Coding Agent CLIs. It supervises existing agent runtimes instead of implementing another agent or a multi-agent collaboration platform.
 
 Mica makes agent execution observable and governable through persistent sessions, run tracking, command policies, approval gates, trace evidence, and execution summaries.
