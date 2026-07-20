@@ -1,8 +1,12 @@
 # Mica AgentOps
 
-Mica is an AI Coding Agent execution governance control plane. It is not a new coding agent runtime and not a multi-agent team platform.
+Mica is a Windows-first AI Coding Agent execution governance control plane. It supervises existing Agent CLI runtimes instead of implementing another agent or multi-agent team platform.
 
-The project has been narrowed to a concrete survival path: prove command governance before adding broader AgentOps surfaces. Slice 0 proved Windows command approval proxying, Slice 1 proved OpenCode shim hit detection, and Slice 2 starts running OpenCode under approval gates.
+The MVP proves a concrete path from natural-language work to governed execution: persistent Agent sessions and runs, native runtime adapters, PATH-shim command interception, human approval gates, trace evidence, and execution summaries. Local mode remains an auditable governance layer rather than a strong security sandbox.
+
+## Release Status
+
+Mica is a working open-source MVP suitable for local demonstrations and engineering exploration. The command approval path, run/session model, OpenCode and Codex integrations, trace storage, SSE API, and Web console are implemented and covered by automated tests. Docker isolation, native-session command enforcement, distributed execution, authentication, and multi-tenancy remain experimental or future work.
 
 Specs:
 
@@ -23,31 +27,31 @@ Specs:
 
 ## Current Capability
 
-- FastAPI command approval API backed by SQLite.
-- Next.js approval console at `/` and `/approvals`.
-- Approval history filters for all, pending, approved, and rejected commands.
-- Command records API and `/commands` audit page for proxy-mediated commands.
-- Run records, `/runs` page, basic run summaries, and failure summaries for controlled Agent CLI sessions.
-- Agent Sessions with `/sessions` and `/sessions/{id}` for complex goals that require follow-up input. A Session is the long-lived goal, display message stream, and native Agent session/thread handle; a Run is one governed Agent CLI invocation under that Session.
-- Interactive Web Agent Runs from natural-language prompts with `mock-agent`, real local `opencode`, real local `codex-cli`, and real local `antigravity-cli` discovery/execution.
-- Run-scoped command evidence via `/commands?run_id=...` and a Run Evidence table that separates Docker wrapper commands from policy-gated inner commands.
-- Event records API, SSE stream, historical event replay, and run-scoped Trace Events plus Realtime Logs panels on `/runs`.
-- Python `mica-proxy` module with JSON command policy loading.
-- Probe mode for recording shim hits without blocking commands.
-- `mica_probe` summary CLI for hit-rate matrices.
-- `mica_eval` summary CLI with five starter eval cases and sample cross-agent report.
-- Codex CLI probe script via `scripts/probe-codex.ps1`, with real local `hit_rate=1.0` evidence recorded.
-- Controlled OpenCode approval runner via `scripts/run-controlled-opencode.ps1`.
-- Web-launched OpenCode, Codex CLI, and Antigravity CLI runs inject controlled PATH, `MICA_ORIGINAL_PATH`, `MICA_API_BASE_URL`, and `MICA_RUN_ID` so proxy-mediated command evidence can attach to the same run.
-- Minimal Docker runner plus an experimental API/service evidence bridge that records Docker executions as Mica runs, commands, events, network policy decisions, workspace file-change evidence, and Docker network-mode evidence.
-- Optional Docker proxy injection plumbing with Linux shims, proxy mount, policy mount, and controlled container PATH.
-- Real Docker approval probe evidence for rejected high-risk `git push` through container shims, with the inner proxy command linked back to the same Docker run summary.
-- Real Docker live-output evidence: container stdout/stderr lines are written as `command_output` trace events while the command is still running and are visible in the `/runs` Realtime Logs panel.
-- Docker demo capture script that runs the approval probe and exports run summary, command records, trace events, file-change events, network evidence, and approval records into a Markdown report.
-- Docker network policy file at `policies/docker-policy.json` for allowed network modes and the explicit host-callback gate.
-- Windows `.cmd` shims for `git`, `npm`, `terraform`, and `kubectl`.
-- PowerShell helper scripts for installing shims, probing PATH, and probing OpenCode/Codex CLI.
-- Backend tests for command approvals, risk detection, probe mode, controlled OpenCode approval mode, real executable resolution, and command exit-code passthrough.
+### Stable MVP
+
+- FastAPI, SQLAlchemy, and SQLite APIs for sessions, runs, commands, approvals, interactions, events, and summaries.
+- Next.js consoles for Agent Sessions, Runs, Command Approvals, Command Records, realtime logs, and trace evidence.
+- Natural-language execution through `mock-agent`, OpenCode, Codex CLI, and Antigravity CLI adapters.
+- Agent-native session continuity: OpenCode server sessions and Codex thread resume, without rebuilding context from Mica transcripts.
+- Structured session interactions for text, single-choice, multi-choice, and native permission/question events where the runtime exposes them.
+- JSON command policy, Windows `.cmd` PATH shims, Python `mica-proxy`, fail-closed approval waits, and stdout/stderr/exit-code passthrough.
+- Run-scoped command and approval evidence, persisted trace events, historical replay, SSE updates, and completion/failure summaries.
+- Probe and eval utilities for measuring shim hits and comparing basic runtime outcomes.
+
+### Experimental
+
+- Codex `app-server` transport for deeper native thread and turn events; stable `codex exec resume` remains the fallback.
+- Docker command execution, proxy injection, network-policy decisions, workspace evidence, and live output capture.
+- Heuristic interaction detection when an Agent runtime does not emit a structured question or permission event.
+
+### Adapter Maturity
+
+| Adapter | One-shot run | Native continuation | Structured interaction | Notes |
+| --- | --- | --- | --- | --- |
+| OpenCode | Yes | HTTP server session | Questions and permissions | Primary session adapter |
+| Codex CLI | Yes | Thread resume | Single-choice/native events where available | App-server path is experimental |
+| Antigravity CLI | Yes | Process-level follow-up only | No guaranteed native contract | Best suited to one-shot runs |
+| Mock Agent | Yes | Deterministic test flow | Test fixtures | No external dependency |
 
 ## Honest Boundaries
 
@@ -55,6 +59,9 @@ Specs:
 - It does not reliably intercept PowerShell or cmd built-ins such as `Remove-Item`, `del`, `rmdir`, or `cd`.
 - Local mode is not a strong security sandbox. Absolute executable paths, direct library calls, or hostile child processes can bypass PATH shims.
 - If the approval API is unavailable or an approval times out, `mica-proxy` fails closed instead of executing the command.
+- Native OpenCode or Codex session turns are not yet guaranteed to route every command through a run-scoped shim environment. The UI distinguishes observed runtime activity from proxy-governed evidence.
+- Realtime behavior varies by adapter. Proxy, process, Docker, and OpenCode events are persisted progressively; some Codex app-server events are finalized in batches.
+- A native runtime can remain busy after a child tool stalls or retains stdio handles. Mica currently times out the run, but automatic native-session abort and stalled-tool recovery are still roadmap work.
 - Strong isolation is deferred to Docker, WSL2, or remote worker slices.
 
 ## Command Policy
@@ -398,7 +405,7 @@ The UI reads `GET /api/agent-runs/agents` to show whether OpenCode, Codex CLI, a
 
 Use `Advanced: Execute Docker Command` only when you want to dogfood the lower-level Docker execution path directly with a command JSON array. That panel calls `POST /api/docker/execute`.
 
-For `/sessions`, OpenCode uses the server-first path. Mica starts or reuses `opencode serve --hostname 127.0.0.1 --port <free>` and calls `POST /session` plus `POST /session/{id}/message`. Set `MICA_OPENCODE_SERVER_URL=http://127.0.0.1:4096` to attach to an already-running OpenCode server instead of letting Mica start one. This avoids Windows command-line length limits for follow-up turns because user text is sent as a JSON body, not as a CLI argument.
+For `/sessions`, OpenCode uses the server-first path. Mica starts or reuses `opencode serve --hostname 127.0.0.1 --port <free>`, creates a native session, submits turns asynchronously, and consumes `/global/event` with message/status polling as recovery. Set `MICA_OPENCODE_SERVER_URL=http://127.0.0.1:4096` to attach to an already-running OpenCode server instead of letting Mica start one. User text is sent in an HTTP JSON body, avoiding Windows command-line length limits for follow-up turns.
 
 For `/sessions`, Codex defaults to the stable `codex exec --json` / `codex exec resume <thread_id>` path. To use the deeper native Codex app-server path, set:
 
@@ -539,6 +546,15 @@ pnpm test
 pnpm build:web
 ```
 
+Current release baseline:
+
+- 134 backend tests passing.
+- 6 frontend interaction/log utility tests passing.
+- ESLint passing.
+- Next.js production build passing for Dashboard, Approvals, Commands, Runs, and Sessions routes.
+
+The frontend suite currently focuses on interaction and rendering utilities. Browser-level Playwright coverage is roadmap work, so the demo flows should also be verified manually before a release.
+
 Focused fail-closed check:
 
 ```powershell
@@ -607,9 +623,17 @@ The capture script reuses the approval probe, then fetches `/api/commands?run_id
 
 - Completed: Slice 0 Windows command approval proxy with PATH shims and fail-closed approvals.
 - Completed: Slice 1 OpenCode probe with controlled PATH and recorded shim hit evidence.
-- Completed: Slice 2 policy files, command records, run records, run summaries, failure summaries, persisted trace events, SSE for proxy-mediated commands, and Web-launched real Agent CLI runs for OpenCode, Codex CLI, and Antigravity CLI.
-- Next: richer Docker policy enforcement, WSL2/remote-worker isolation, and stronger session resume semantics for long-running interactive work.
+- Completed: Slice 2 policy files, command/run records, summaries, trace events, SSE, and Web-launched real Agent CLI runs.
+- Completed: persistent Agent Sessions, OpenCode native HTTP sessions, Codex thread resume, and structured Session Interactions.
+- Next: abort/recovery for stalled native tools, fully streaming Codex turns, and run-scoped proxy governance for native session turns.
+- Later: Playwright end-to-end coverage, richer Docker policy enforcement, WSL2/remote workers, authentication, and multi-tenant execution.
 
 ## Resume Description
 
-Mica AgentOps: built a Windows-first Coding Agent execution governance prototype with PATH shims, a Python command proxy, FastAPI approval API, SQLite audit records, Next.js run/session consoles, and Web-launched Agent CLI adapters for OpenCode, Codex CLI, and Antigravity CLI. The project focuses on policy-gated command execution for local Agent CLI runtimes, with trace evidence, run summaries, command approvals, eval hooks, and a roadmap toward stronger Docker/WSL2/remote-worker isolation.
+**Mica AgentOps - AI Coding Agent Execution Governance Control Plane**
+
+- Built a Windows-first AgentOps MVP with FastAPI, SQLAlchemy, SQLite, Next.js, and TypeScript, integrating OpenCode, Codex CLI, and Antigravity CLI through process, JSONL, HTTP-server, and app-server adapters.
+- Designed a PATH-shim and Python command-proxy approval gate for policy-controlled external commands, preserving stdout, stderr, exit codes, approval decisions, and run-scoped audit evidence.
+- Implemented persistent Agent sessions, native session/thread continuation, structured human interactions, SSE trace timelines, execution summaries, probe/eval tooling, and an experimental Docker evidence path.
+
+Describe Mica as an open-source MVP or execution-governance prototype. Do not claim production-grade sandboxing, complete interception of PowerShell/cmd built-ins, distributed scheduling, or enterprise multi-tenancy.

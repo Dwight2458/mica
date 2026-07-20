@@ -137,7 +137,24 @@ class SessionService:
 
     def list_messages(self, session_id: str) -> list[SessionMessage]:
         statement = select(SessionMessage).where(SessionMessage.session_id == session_id).order_by(SessionMessage.created_at.asc())
-        return list(self.session.scalars(statement))
+        messages = list(self.session.scalars(statement))
+        native_text_keys = {
+            (message.run_id, message.content)
+            for message in messages
+            if message.run_id is not None
+            and message.role == SessionMessageRole.AGENT
+            and message.message_metadata.get("source") == "opencode_message_part"
+            and message.message_metadata.get("part_type") == "text"
+        }
+        return [
+            message
+            for message in messages
+            if not (
+                message.role == SessionMessageRole.AGENT
+                and message.message_metadata.get("source") == "run_output"
+                and (message.run_id, message.content) in native_text_keys
+            )
+        ]
 
     def add_message(
         self,
@@ -172,11 +189,13 @@ class SessionService:
             record.external_session_id = external_session_id
             record.transport = _transport_for_agent(record.agent_type)
         if output:
-            agent_messages = self.session.scalars(
-                select(SessionMessage).where(
-                    SessionMessage.session_id == record.id,
-                    SessionMessage.run_id == run_id,
-                    SessionMessage.role == SessionMessageRole.AGENT,
+            agent_messages = list(
+                self.session.scalars(
+                    select(SessionMessage).where(
+                        SessionMessage.session_id == record.id,
+                        SessionMessage.run_id == run_id,
+                        SessionMessage.role == SessionMessageRole.AGENT,
+                    )
                 )
             )
             has_run_output = any(

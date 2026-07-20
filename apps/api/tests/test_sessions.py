@@ -11,13 +11,22 @@ from typing import Any
 from fastapi.testclient import TestClient
 
 from app.models.approval import utcnow
-from app.models.enums import AgentSessionStatus, InteractionKind, InteractionSource, RunStatus
+from app.models.enums import (
+    AgentSessionStatus,
+    EventType,
+    InteractionKind,
+    InteractionSource,
+    RunStatus,
+    SessionMessageRole,
+)
 from app.models.run import RunRecord
 from app.models.session import AgentSession
 from app.runners.opencode_server import assistant_message_completed
 from app.services.interaction_service import InteractionService
 from app.services import session_service as session_service_module
-from app.services.session_service import _record_opencode_message_updates
+from app.services.event_service import EventService
+from app.services.session_service import SessionService, _record_opencode_message_updates
+from app.schemas.events import EventCreate
 
 
 def _write_fake_agent(tmp_path: Path, name: str, body: str) -> Path:
@@ -676,6 +685,103 @@ def test_opencode_message_parts_are_upserted_and_reasoning_is_not_mirrored(
     assert text_message["content"] == "## Data model\n\nFinal schema"
     assert tool_message["message_metadata"]["tool_status"] == "completed"
     assert "private chain of thought" not in [message["content"] for message in messages]
+
+
+def test_finalize_run_does_not_duplicate_mirrored_opencode_text(
+    client: TestClient,
+    tmp_path: Path,
+) -> None:
+    output = "## Design\n\nThe native OpenCode response."
+    with client.app.state.database.session_factory() as db:
+        record = AgentSession(
+            title="Native final output",
+            workspace=str(tmp_path),
+            agent_type="opencode",
+            runner_mode="local",
+            status=AgentSessionStatus.ACTIVE,
+            external_session_id="oc-final-output",
+            transport="http",
+        )
+        db.add(record)
+        db.flush()
+        run = RunRecord(source="opencode", cwd=str(tmp_path), session_id=record.id)
+        db.add(run)
+        db.commit()
+        session_id = record.id
+
+        _record_opencode_message_updates(
+            db,
+            run_id=run.id,
+            external_session_id="oc-final-output",
+            messages=[
+                {
+                    "info": {"id": "assistant-final", "role": "assistant"},
+                    "parts": [{"id": "text-final", "type": "text", "text": output}],
+                }
+            ],
+            seen_part_states=set(),
+        )
+        EventService(db).create(
+            EventCreate(
+                run_id=run.id,
+                event_type=EventType.COMMAND_OUTPUT,
+                message=output,
+                payload={
+                    "stream": "stdout",
+                    "text": output,
+                    "raw_event": {"type": "text", "message": output},
+                },
+            )
+        )
+        db.commit()
+        SessionService(db).finalize_run(run.id, status=RunStatus.COMPLETED)
+
+    messages = client.get(f"/api/sessions/{session_id}/messages").json()
+    matching = [message for message in messages if message["content"] == output]
+    assert len(matching) == 1
+    assert matching[0]["message_metadata"]["source"] == "opencode_message_part"
+
+
+def test_list_messages_hides_legacy_opencode_run_output_duplicate(
+    client: TestClient,
+    tmp_path: Path,
+) -> None:
+    output = "A response persisted twice by the legacy finalizer."
+    with client.app.state.database.session_factory() as db:
+        record = AgentSession(
+            title="Legacy duplicate",
+            workspace=str(tmp_path),
+            agent_type="opencode",
+            runner_mode="local",
+            status=AgentSessionStatus.COMPLETED,
+        )
+        db.add(record)
+        db.flush()
+        run = RunRecord(source="opencode", cwd=str(tmp_path), session_id=record.id)
+        db.add(run)
+        db.flush()
+        service = SessionService(db)
+        service.add_message(
+            record.id,
+            role=SessionMessageRole.AGENT,
+            run_id=run.id,
+            content=output,
+            metadata={"source": "opencode_message_part", "part_type": "text"},
+        )
+        service.add_message(
+            record.id,
+            role=SessionMessageRole.AGENT,
+            run_id=run.id,
+            content=output,
+            metadata={"source": "run_output"},
+        )
+        db.commit()
+        session_id = record.id
+
+    messages = client.get(f"/api/sessions/{session_id}/messages").json()
+    matching = [message for message in messages if message["content"] == output]
+    assert len(matching) == 1
+    assert matching[0]["message_metadata"]["source"] == "opencode_message_part"
 
 
 def test_opencode_sse_message_part_update_is_mirrored(
