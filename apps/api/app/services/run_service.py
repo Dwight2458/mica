@@ -9,6 +9,7 @@ from app.models.approval import utcnow
 from app.models.command import CommandRecord
 from app.models.enums import CommandStatus, EventType, RunStatus
 from app.models.run import RunRecord
+from app.models.session import AgentSession
 from app.schemas.events import EventCreate
 from app.schemas.runs import FailureSummary, RunRecordCreate, RunSummary
 from app.services.event_service import EventService
@@ -54,6 +55,10 @@ class RunService:
         for run in self.session.scalars(statement):
             if run.id in active_run_ids:
                 continue
+            if run.session_id:
+                agent_session = self.session.get(AgentSession, run.session_id)
+                if agent_session is not None and agent_session.transport in {"http", "app-server-stdio"}:
+                    continue
             if _as_utc_naive(run.started_at) > cutoff:
                 continue
             run.status = RunStatus.FAILED

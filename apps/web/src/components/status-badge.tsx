@@ -23,6 +23,13 @@ const statusClasses: Record<string, string> = {
   runtime_internal: "bg-zinc-100 text-zinc-700 dark:bg-zinc-900 dark:text-zinc-200",
   external_binary: "bg-slate-100 text-slate-700 dark:bg-slate-900 dark:text-slate-200",
   policy_gated: "bg-yellow-100 text-yellow-800 dark:bg-yellow-950 dark:text-yellow-200",
+  choice: "bg-blue-100 text-blue-700 dark:bg-blue-950 dark:text-blue-200",
+  text: "bg-blue-100 text-blue-700 dark:bg-blue-950 dark:text-blue-200",
+  permission: "bg-yellow-100 text-yellow-800 dark:bg-yellow-950 dark:text-yellow-200",
+  approval: "bg-yellow-100 text-yellow-800 dark:bg-yellow-950 dark:text-yellow-200",
+  native: "bg-emerald-100 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-200",
+  structured: "bg-purple-100 text-purple-700 dark:bg-purple-950 dark:text-purple-200",
+  detected: "bg-zinc-100 text-zinc-700 dark:bg-zinc-900 dark:text-zinc-200",
 }
 
 export function StatusBadge({ status }: StatusBadgeProps) {

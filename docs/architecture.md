@@ -140,7 +140,9 @@ Fields:
 
 The Session is the persistent goal, display message stream, and native Agent session/thread handle. The Run is still one Agent CLI invocation. This distinction lets Mica support multi-turn tasks while preserving its AgentOps boundary: each turn remains linked to run, command, approval, and trace evidence.
 
-Mica must not reconstruct Agent state from its own transcript. OpenCode Session turns use the OpenCode server-first HTTP API: Mica starts or reuses `opencode serve`, creates a native OpenCode session with `POST /session`, and sends each turn with `POST /session/{id}/message`. Codex continuation uses the captured Codex thread id through `codex exec resume`. Future adapter work should subscribe to OpenCode `/global/event` for richer streaming/tool evidence and move Codex from `exec resume` to SDK/app-server when deeper turn steering is needed.
+Mica must not reconstruct Agent state from its own transcript. OpenCode Session turns use the OpenCode server-first HTTP API: Mica starts or reuses `opencode serve`, creates a native OpenCode session with `POST /session`, and sends each turn with the OpenCode session API. Codex has two supported Session transports: the stable default path uses the captured Codex thread id through `codex exec resume`, and the opt-in native path uses `codex app-server` over stdio JSON-RPC. In app-server mode Mica calls `thread/start` or `thread/resume`, sends a turn with `turn/start`, stores the native Codex thread id, and writes streamed app-server events into Mica trace evidence.
+
+Codex app-server improves native thread continuity, but it is not the same as attaching to an old terminal process. Agent conversation/thread state is native; transient shell process state is not guaranteed to resume.
 
 ## Event Record Data Model
 

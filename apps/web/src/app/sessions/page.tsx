@@ -24,6 +24,7 @@ import {
   type AgentAvailability,
   type AgentListResponse,
   type AgentSession,
+  type SessionInteraction,
   type SessionContinueResponse,
 } from "@/lib/api"
 import { cn } from "@/lib/utils"
@@ -45,6 +46,7 @@ const defaultForm: SessionForm = {
 export default function SessionsPage() {
   const router = useRouter()
   const [sessions, setSessions] = useState<AgentSession[]>([])
+  const [pendingPrompts, setPendingPrompts] = useState<Record<string, string>>({})
   const [agents, setAgents] = useState<AgentAvailability[]>([
     { agent_type: "mock-agent", available: true, executable: "mock-agent", reason: null },
   ])
@@ -57,6 +59,16 @@ export default function SessionsPage() {
     try {
       const nextSessions = await apiRequest<AgentSession[]>("/sessions")
       setSessions(nextSessions)
+      const waitingSessions = nextSessions.filter((session) => session.status === "waiting_user_input")
+      const pendingEntries = await Promise.all(
+        waitingSessions.map(async (session) => {
+          const interactions = await apiRequest<SessionInteraction[]>(
+            `/sessions/${encodeURIComponent(session.id)}/interactions?status=pending`
+          )
+          return [session.id, interactions[0]?.prompt ?? "Waiting for your input."] as const
+        })
+      )
+      setPendingPrompts(Object.fromEntries(pendingEntries))
       setError(null)
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unable to load sessions")
@@ -207,6 +219,11 @@ export default function SessionsPage() {
                     </TableCell>
                     <TableCell className="max-w-[360px] whitespace-normal">
                       <div className="font-medium">{session.title}</div>
+                      {pendingPrompts[session.id] ? (
+                        <div className="mt-1 line-clamp-2 text-xs text-muted-foreground">
+                          {pendingPrompts[session.id]}
+                        </div>
+                      ) : null}
                       <code className="mt-1 block truncate rounded bg-muted px-2 py-1 text-xs">{session.id}</code>
                     </TableCell>
                     <TableCell>{session.agent_type}</TableCell>
@@ -235,4 +252,3 @@ export default function SessionsPage() {
     </div>
   )
 }
-

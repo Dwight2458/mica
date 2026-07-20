@@ -76,3 +76,21 @@ $env:MICA_OPENCODE_SERVER_URL = "http://127.0.0.1:4096"
 ```
 
 Session turns call `POST /session/{id}/message` with JSON text parts. This is intentionally different from `/runs`, which still uses `opencode run --auto --format json` for one-shot run evidence. Because `opencode serve` is a long-lived process, per-turn command evidence cannot rely only on a static `MICA_RUN_ID` environment variable; richer run-linked tool evidence should come from OpenCode server events or an explicit proxy/session mapping.
+
+### Intermediate tool calls are not turn completion
+
+OpenCode can persist several completed assistant messages during one turn. Messages ending with `finish=tool-calls` only mean that one tool-call cycle finished; the native session may still be `busy`, may execute more tools, or may be waiting on the `question` tool. Mica must only finalize after a terminal finish while the session is no longer busy, or after an explicit `session.idle` event.
+
+Pending native questions are read from `GET /question` and exposed as Session interactions. Answers normally go to `POST /question/{requestID}/reply`, so the same OpenCode turn resumes. OpenCode keeps pending questions in process memory: if the managed server restarts before the answer, Mica falls back to sending the selected answer as a new turn on the same native session ID.
+
+## Codex Sessions Through `codex app-server`
+
+The `/sessions` Codex adapter defaults to `codex exec --json` and `codex exec resume <thread_id>` because that path is stable for local automation.
+
+To test native Codex thread handling through app-server:
+
+```powershell
+$env:MICA_CODEX_SESSION_TRANSPORT = "app-server"
+```
+
+Mica then starts `codex app-server` over stdio JSON-RPC for each Session turn, calls `thread/start` or `thread/resume`, sends the user turn with `turn/start`, and stores the returned Codex thread id on the Session. This avoids rebuilding context from Mica's transcript. It does not guarantee restoration of a previous shell process, REPL, or terminal buffer.
